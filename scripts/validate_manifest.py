@@ -3,64 +3,60 @@ import json
 import sys
 from pathlib import Path
 
-REQUIRED_FIELDS = ["id", "name", "version", "description", "author", "min_app_version", "main", "plugin_class"]
-PLUGINS_DIR = Path("plugins")
+REQUIRED_FIELDS = ["id", "name", "version", "author", "description", "main"]
 
-def validate_plugin(plugin_path):
-    manifest_path = plugin_path / "manifest.json"
-    
-    # 1. Check if manifest exists
-    if not manifest_path.exists():
-        print(f"❌ [FAIL] {plugin_path.name}: Missing manifest.json")
-        return False
-    
-    # 2. Parse JSON
-    try:
-        with open(manifest_path, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-    except json.JSONDecodeError as e:
-        print(f"❌ [FAIL] {plugin_path.name}: Invalid JSON in manifest.json - {e}")
-        return False
-        
-    # 3. Check required fields
-    missing = [field for field in REQUIRED_FIELDS if field not in manifest]
-    if missing:
-        print(f"❌ [FAIL] {plugin_path.name}: Missing required fields in manifest: {missing}")
-        return False
-        
-    # 4. Check folder name matches ID
-    plugin_id = manifest.get("id")
-    if plugin_id != plugin_path.name:
-        print(f"❌ [FAIL] {plugin_path.name}: manifest ID '{plugin_id}' does not match folder name '{plugin_path.name}'")
-        return False
-        
-    # 5. Check dependencies (optional but structure check)
-    if "dependencies" in manifest and not isinstance(manifest["dependencies"], list):
-         print(f"❌ [FAIL] {plugin_path.name}: 'dependencies' must be a list")
-         return False
-
-    print(f"✅ [PASS] {plugin_path.name}")
-    return True
-
-def main():
-    if not PLUGINS_DIR.exists():
-        print("Plugins directory not found.")
+def validate_manifests():
+    plugins_dir = Path(__file__).parent.parent / "plugins"
+    if not plugins_dir.exists():
+        print(f"Error: Plugins directory not found at {plugins_dir}")
         sys.exit(1)
         
-    failed = False
+    has_errors = False
     
-    # Iterate over immediate subdirectories of plugins/
-    for item in PLUGINS_DIR.iterdir():
+    print(f"Validating plugins in {plugins_dir}...")
+    
+    for item in plugins_dir.iterdir():
         if item.is_dir() and not item.name.startswith("."):
-            if not validate_plugin(item):
-                failed = True
+            manifest_path = item / "manifest.json"
+            if not manifest_path.exists():
+                print(f"Error: Missing manifest.json in {item.name}")
+                has_errors = True
+                continue
                 
-    if failed:
-        print("\n🚫 Verification failed for one or more plugins.")
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = json.load(f)
+                    
+                # Check required fields
+                missing = [field for field in REQUIRED_FIELDS if field not in manifest]
+                if missing:
+                    print(f"Error: {item.name}/manifest.json missing fields: {missing}")
+                    has_errors = True
+                    
+                # Check ID matches folder name
+                if manifest.get("id") != item.name:
+                    print(f"Error: {item.name}/manifest.json ID '{manifest.get('id')}' does not match folder name '{item.name}'")
+                    has_errors = True
+                    
+                # Check main file exists
+                main_file = manifest.get("main")
+                if main_file and not (item / main_file).exists():
+                     print(f"Error: {item.name}/manifest.json 'main' file '{main_file}' not found")
+                     has_errors = True
+                     
+                print(f"  + Valid: {item.name}")
+                
+            except json.JSONDecodeError:
+                print(f"Error: {item.name}/manifest.json is not valid JSON")
+                has_errors = True
+            except Exception as e:
+                print(f"Error reading {item.name}/manifest.json: {e}")
+                has_errors = True
+                
+    if has_errors:
         sys.exit(1)
     else:
-        print("\n🎉 All plugins verified successfully!")
-        sys.exit(0)
+        print("\nAll manifests valid.")
 
 if __name__ == "__main__":
-    main()
+    validate_manifests()
