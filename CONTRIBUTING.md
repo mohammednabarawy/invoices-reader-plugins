@@ -13,7 +13,7 @@ Thank you for your interest in contributing! This guide will help you submit you
 ### 1. Fork and Clone
 Fork this repository to your GitHub account, then clone it locally:
 ```bash
-git clone https://github.com/YOUR_USERNAME/invoices-reader-plugins.git
+git clone https://github.com/mohammednabarawy/invoices-reader-plugins.git
 cd invoices-reader-plugins
 ```
 

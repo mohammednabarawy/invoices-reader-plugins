@@ -11,7 +11,10 @@ Welcome to the official community plugin repository for **Invoices Reader**. Thi
 ## 🚀 How to Use
 
 ### For Users
-1.  Download or `git clone` this repository.
+1.  Download or `git clone` this repository:
+    ```bash
+    git clone https://github.com/mohammednabarawy/invoices-reader-plugins.git
+    ```
 2.  Copy the folder of the desired plugin from `plugins/` to your local Invoices Reader `plugins` directory.
 3.  Restart the application.
 
