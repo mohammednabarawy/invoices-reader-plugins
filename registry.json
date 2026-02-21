@@ -1,21 +1,5 @@
 [
     {
-        "id": "whatsapp-redirect",
-        "name": "WhatsApp Redirect",
-        "version": "1.0.0",
-        "author": "Invoices Reader",
-        "description": "Send invoice summaries to WhatsApp and copy invoice image to clipboard for quick sharing.",
-        "capabilities": [
-            "ui:toolbar",
-            "data:read",
-            "data:write"
-        ],
-        "min_app_version": "1.0.0",
-        "main": "main.py",
-        "plugin_class": "WhatsAppRedirectPlugin",
-        "path": "plugins/whatsapp-redirect"
-    },
-    {
         "id": "whatsapp_agent",
         "name": "WhatsApp AI Agent",
         "version": "1.0.0",
