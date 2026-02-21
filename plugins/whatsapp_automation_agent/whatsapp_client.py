@@ -221,6 +221,23 @@ class WhatsAppClient:
                                                 if line and line.lower() != "profile details" and not line.lower().startswith("profile"):
                                                     header_title = line
                                                     break
+                                                    
+                                    # Strategy 4 (OpenClaw style): Extract actual raw phone number from incoming message data-ids, bypassing contact names
+                                    try:
+                                        msg_in = self.page.locator("div.message-in").last()
+                                        if await msg_in.count() > 0:
+                                            data_id = await msg_in.get_attribute("data-id")
+                                            if data_id:
+                                                import re
+                                                # Pattern usually looks like "false_966592328502@c.us_..."
+                                                number_match = re.search(r'false_(\d+)(?:@c\.us|@s\.whatsapp\.net)', data_id)
+                                                if number_match:
+                                                    extracted_number = number_match.group(1)
+                                                    logger.info(f"[WA] Strategy 4 natively extracted raw phone number: '{extracted_number}'")
+                                                    # We append this raw number to the header title to guarantee a match against the user's settings!
+                                                    header_title += " " + extracted_number
+                                    except Exception as e:
+                                        logger.warning(f"[WA] Could not extract raw number from DOM: {e}")
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
@@ -242,20 +259,11 @@ class WhatsAppClient:
                                     # It's a contact name, strip spaces and symbols
                                     return re.sub(r'[^a-z0-9]', '', val)
                                     
+                            normalized_allowed = normalize_for_match(allowed_sender)
                             normalized_header = normalize_for_match(header_title)
                             
-                            # Support comma-separated multiple allowed senders
-                            allowed_senders_list = [s.strip() for s in allowed_sender.split(',') if s.strip()]
-                            
-                            match_found = False
-                            for sender in allowed_senders_list:
-                                normalized_allowed = normalize_for_match(sender)
-                                if normalized_allowed in normalized_header or normalized_header in normalized_allowed:
-                                    match_found = True
-                                    break
-                                    
-                            if not match_found:
-                                logger.info(f"Skipping messages: chat '{header_title}' doesn't match any allowed sender in '{allowed_sender}'")
+                            if normalized_allowed not in normalized_header and normalized_header not in normalized_allowed:
+                                logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
                                 continue
                                 
                         # Get the last message in the list
