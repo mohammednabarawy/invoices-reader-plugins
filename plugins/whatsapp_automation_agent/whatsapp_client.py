@@ -242,11 +242,20 @@ class WhatsAppClient:
                                     # It's a contact name, strip spaces and symbols
                                     return re.sub(r'[^a-z0-9]', '', val)
                                     
-                            normalized_allowed = normalize_for_match(allowed_sender)
                             normalized_header = normalize_for_match(header_title)
                             
-                            if normalized_allowed not in normalized_header and normalized_header not in normalized_allowed:
-                                logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
+                            # Support comma-separated multiple allowed senders
+                            allowed_senders_list = [s.strip() for s in allowed_sender.split(',') if s.strip()]
+                            
+                            match_found = False
+                            for sender in allowed_senders_list:
+                                normalized_allowed = normalize_for_match(sender)
+                                if normalized_allowed in normalized_header or normalized_header in normalized_allowed:
+                                    match_found = True
+                                    break
+                                    
+                            if not match_found:
+                                logger.info(f"Skipping messages: chat '{header_title}' doesn't match any allowed sender in '{allowed_sender}'")
                                 continue
                                 
                         # Get the last message in the list
