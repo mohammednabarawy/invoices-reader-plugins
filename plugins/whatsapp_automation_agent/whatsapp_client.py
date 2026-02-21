@@ -190,10 +190,6 @@ class WhatsAppClient:
                         # Apply Sender Filtering
                         allowed_sender = self.plugin.get_setting('allowed_sender', "")
                         if allowed_sender and allowed_sender.strip():
-                            # Normalize allowed sender: keep only digits/letters
-                            import re
-                            allowed_sender_clean = re.sub(r'[^a-zA-Z0-9]', '', allowed_sender).lower()
-                            
                             header_title = ""
                             try:
                                 # Look for chat title in the open chat header
@@ -211,23 +207,28 @@ class WhatsAppClient:
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
-                            # Normalize the extracted header title similarly
-                            header_title_clean = re.sub(r'[^a-zA-Z0-9]', '', header_title).lower() if header_title else ""
-                            
-                            if not header_title_clean:
+                            if not header_title:
                                 logger.info(f"Skipping messages: empty chat title extracted (matched against allowed '{allowed_sender}')")
                                 continue
                                 
-                            # Check if the clean normalized sender is in the clean normalized title
-                            # or vice-versa (to support partial matches like omitting the '0' or country code)
-                            # e.g., '966592328502' in '9660592328502' won't work perfectly if '0' is arbitrary,
-                            # so we do simple substring matching of the core local number.
-                            # A robust way: check if the last 7-9 digits match.
+                            import re
                             
-                            min_match_len = min(7, len(allowed_sender_clean))
-                            core_sender = allowed_sender_clean[-min_match_len:] if min_match_len > 0 else allowed_sender_clean
+                            def normalize_for_match(val):
+                                val = val.lower().strip()
+                                digits = re.sub(r'\D', '', val)
+                                if len(digits) >= 7:
+                                    # It's likely a phone number. 
+                                    # Discard country codes and leading zeros by taking the last 9 digits.
+                                    # If it's shorter than 9, just take as many as we confidently have.
+                                    return digits[-9:]
+                                else:
+                                    # It's a contact name, strip spaces and symbols
+                                    return re.sub(r'[^a-z0-9]', '', val)
+                                    
+                            normalized_allowed = normalize_for_match(allowed_sender)
+                            normalized_header = normalize_for_match(header_title)
                             
-                            if core_sender not in header_title_clean:
+                            if normalized_allowed not in normalized_header and normalized_header not in normalized_allowed:
                                 logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
                                 continue
                                 
