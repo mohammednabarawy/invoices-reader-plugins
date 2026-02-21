@@ -190,23 +190,44 @@ class WhatsAppClient:
                         # Apply Sender Filtering
                         allowed_sender = self.plugin.get_setting('allowed_sender', "")
                         if allowed_sender and allowed_sender.strip():
-                            allowed_sender_clean = allowed_sender.lower().replace(" ", "")
+                            # Normalize allowed sender: keep only digits/letters
+                            import re
+                            allowed_sender_clean = re.sub(r'[^a-zA-Z0-9]', '', allowed_sender).lower()
+                            
                             header_title = ""
                             try:
                                 # Look for chat title in the open chat header
                                 header_element = self.page.locator("#main header").first
                                 if await header_element.count() > 0:
-                                    title_element = header_element.locator("span[title], div[title]").first
+                                    # We specifically want the span that contains the title text, ignoring "Profile details" accessibility wrappers
+                                    title_element = header_element.locator("div[title], span[title]").filter(has_not_text="Profile details").first
                                     if await title_element.count() > 0:
                                         header_title = await title_element.get_attribute("title")
                                     
                                     if not header_title:
-                                        header_title = await header_element.inner_text()
+                                        # Backup: grab all text but avoid generic wrappers
+                                        full_text = await header_element.inner_text()
+                                        header_title = full_text.split('\n')[0] if full_text else ""
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
-                            header_title_clean = header_title.lower().replace(" ", "")
-                            if not header_title_clean or allowed_sender_clean not in header_title_clean:
+                            # Normalize the extracted header title similarly
+                            header_title_clean = re.sub(r'[^a-zA-Z0-9]', '', header_title).lower() if header_title else ""
+                            
+                            if not header_title_clean:
+                                logger.info(f"Skipping messages: empty chat title extracted (matched against allowed '{allowed_sender}')")
+                                continue
+                                
+                            # Check if the clean normalized sender is in the clean normalized title
+                            # or vice-versa (to support partial matches like omitting the '0' or country code)
+                            # e.g., '966592328502' in '9660592328502' won't work perfectly if '0' is arbitrary,
+                            # so we do simple substring matching of the core local number.
+                            # A robust way: check if the last 7-9 digits match.
+                            
+                            min_match_len = min(7, len(allowed_sender_clean))
+                            core_sender = allowed_sender_clean[-min_match_len:] if min_match_len > 0 else allowed_sender_clean
+                            
+                            if core_sender not in header_title_clean:
                                 logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
                                 continue
                                 
