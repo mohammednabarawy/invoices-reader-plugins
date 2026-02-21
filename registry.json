@@ -24,10 +24,10 @@
         "category": "communication",
         "path": "plugins/whatsapp_agent",
         "files": [
-            "manifest.json",
             "requirements.txt",
-            "settings_ui.py",
+            "manifest.json",
             "whatsapp_client.py",
+            "settings_ui.py",
             "__init__.py"
         ]
     },
