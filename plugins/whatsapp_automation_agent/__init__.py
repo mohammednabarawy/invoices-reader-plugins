@@ -33,6 +33,14 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
         default=False
     )
 
+    allowed_sender = Field(
+        type="text",
+        label="Allowed Sender (Name or Number)",
+        description="Only parse files/messages from this specific contact name or number (e.g., 'You', or '966...'). Leave blank for all.",
+        persist=True,
+        default=""
+    )
+
     qr_code_display = Field(
         type="text",
         label="WhatsApp QR Code / Status",

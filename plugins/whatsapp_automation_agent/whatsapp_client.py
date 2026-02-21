@@ -153,43 +153,161 @@ class WhatsAppClient:
         """Polls for new unread messages in the chat list."""
         logger.info("WhatsApp Agent ready for messages.")
         
-        # Basic polling loop for unread messages indicator.
-        # WhatsApp Web DOM changes frequently. A more robust way relies on
-        # evaluating window.Store (requires injecting a script). 
-        # For this basic plugin, we will rely on UI DOM scraping.
+        # Temporary directory to save downloads
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        downloads_dir = os.path.join(plugin_dir, "downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
         
         while self.is_running:
             try:
-                # Look for unread message badges in the chat list - support English and Arabic
-                unread_chats = await self.page.locator("div[aria-label*='unread message'], div[aria-label*='رسالة غير مقروءة']").all()
+                # Look for unread message badges in the chat list
+                unread_selectors = [
+                    "div[aria-label*='unread message']",
+                    "div[aria-label*='رسالة غير مقروءة']",
+                    "span[aria-label*='unread message']",
+                    "span[aria-label*='رسالة غير مقروءة']"
+                ]
+                unread_chats = []
+                for selector in unread_selectors:
+                    elements = await self.page.locator(selector).all()
+                    unread_chats.extend(elements)
+                
+                # Use a set to avoid processing the same chat multiple times if selectors overlap
+                # (Playwright locators are unhashable though, so just process them and they'll be read)
+                processed_in_this_loop = False
                 
                 for chat in unread_chats:
                     try:
+                        # Ensure we can click it
+                        if not await chat.is_visible():
+                            continue
+                            
                         # Click the chat to open it
                         await chat.click(timeout=5000)
-                        await asyncio.sleep(1) # wait for messages to load
+                        await asyncio.sleep(1.5) # wait for messages to load and read state to update
+                        processed_in_this_loop = True
                         
+                        # Apply Sender Filtering
+                        allowed_sender = self.plugin.get_field('allowed_sender')
+                        if allowed_sender and allowed_sender.strip():
+                            allowed_sender_clean = allowed_sender.lower().replace(" ", "")
+                            header_title = ""
+                            try:
+                                # Look for chat title in the open chat header
+                                header_element = self.page.locator("header").first
+                                if await header_element.count() > 0:
+                                    title_element = header_element.locator("span[dir='auto']").first
+                                    if await title_element.count() > 0:
+                                        header_title = await title_element.inner_text()
+                                    else:
+                                        title_element = header_element.locator("div span[title]").first
+                                        if await title_element.count() > 0:
+                                            header_title = await title_element.get_attribute("title")
+                                            if not header_title:
+                                                header_title = await title_element.inner_text()
+                            except Exception as e:
+                                logger.warning(f"Could not read chat header: {e}")
+                            
+                            header_title_clean = header_title.lower().replace(" ", "")
+                            if not header_title_clean or allowed_sender_clean not in header_title_clean:
+                                logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
+                                continue
+                                
                         # Get the last message in the list
                         messages = await self.page.locator("div.message-in").all()
                         if messages:
                             last_message = messages[-1]
+                            has_downloaded = False
+                            
+                            # 1. Check for documents/files with a direct downward arrow download button inside the message
+                            dl_icon_selectors = "span[data-icon='down'], span[data-icon='arrow-down']"
+                            download_btn = last_message.locator(dl_icon_selectors).first
+                            
+                            if await download_btn.count() == 0:
+                                download_btn = last_message.locator("div[role='button'][aria-label='Download'], div[role='button'][aria-label='تنزيل']").first
+                                
+                            if await download_btn.count() > 0 and await download_btn.is_visible():
+                                logger.info("Found downloadable media attachment.")
+                                try:
+                                    async with self.page.expect_download(timeout=15000) as download_info:
+                                        await download_btn.click()
+                                    download = await download_info.value
+                                    
+                                    file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                    await download.save_as(file_path)
+                                    logger.info(f"Downloaded media document: {file_path}")
+                                    has_downloaded = True
+                                    
+                                    # Forward to main app via API
+                                    if hasattr(self.plugin.api, 'processing'):
+                                        self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        
+                                except Exception as e:
+                                    logger.error(f"Error downloading media document: {e}")
+
+                            # 2. Check for displayed images (WhatsApp strips direct download buttons from displayed images)
+                            if not has_downloaded:
+                                img_element = last_message.locator("img[src^='blob:']").first
+                                if await img_element.count() > 0 and await img_element.is_visible():
+                                    logger.info("Found image message.")
+                                    try:
+                                        # Click image to open the media viewer
+                                        await img_element.click()
+                                        await asyncio.sleep(1)
+                                        
+                                        # Click the download button in the top right of the viewer
+                                        viewer_download_btn = self.page.locator("div[role='button'][aria-label='Download'], div[role='button'][aria-label='تنزيل'], span[data-icon='download']").first
+                                        if await viewer_download_btn.count() > 0 and await viewer_download_btn.is_visible():
+                                            async with self.page.expect_download(timeout=15000) as download_info:
+                                                await viewer_download_btn.click()
+                                            download = await download_info.value
+                                            
+                                            file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                            await download.save_as(file_path)
+                                            logger.info(f"Downloaded image: {file_path}")
+                                            has_downloaded = True
+                                            
+                                            # Queue for processing
+                                            if hasattr(self.plugin.api, 'processing'):
+                                                self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        else:
+                                            logger.warning("Could not find download button in image viewer.")
+                                            
+                                        # Close viewer
+                                        await self.page.keyboard.press("Escape")
+                                        await asyncio.sleep(0.5)
+                                    except Exception as e:
+                                        logger.error(f"Error downloading image: {e}")
+                                        # Ensure viewer is closed
+                                        await self.page.keyboard.press("Escape")
+
+                            # 3. Read any text attached
                             text_element = last_message.locator("span.selectable-text")
+                            msg_text = ""
                             if await text_element.count() > 0:
                                 msg_text = await text_element.first.inner_text()
                                 logger.info(f"Received WhatsApp Message: {msg_text}")
                                 
-                                # Fire integration event
+                            # 4. Auto-reply logic
+                            if msg_text or has_downloaded:
                                 bot_val = self.plugin.get_field('bot_mode')
                                 if bot_val:
-                                    await self.auto_reply("I received your message! I am the Invoices Reader AI agent.")
+                                    reply_msg = "I received your message! I am the Invoices Reader AI agent."
+                                    if has_downloaded:
+                                        reply_msg = "I received your file and queued it for processing! I am the Invoices Reader AI agent."
+                                    await self.auto_reply(reply_msg)
+                                    
                     except Exception as e:
                         logger.warning(f"Error checking individual message: {e}")
-                        
-            except Exception as e:
-                # Silently catch scraping errors as DOM might change
-                pass
                 
-            await asyncio.sleep(5) # Poll every 5 seconds
+                # If we processed chats, maybe wait a bit less
+                if processed_in_this_loop:
+                    await asyncio.sleep(2)
+                else:
+                    await asyncio.sleep(5)
+            except Exception as e:
+                # Silently catch broad scraping errors to keep the loop resilient
+                await asyncio.sleep(5)
             
     async def auto_reply(self, text: str):
         """Types and sends a message in the currently open chat."""
