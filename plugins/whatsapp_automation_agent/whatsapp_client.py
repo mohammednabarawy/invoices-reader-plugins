@@ -195,15 +195,29 @@ class WhatsAppClient:
                                 # Look for chat title in the open chat header
                                 header_element = self.page.locator("#main header").first
                                 if await header_element.count() > 0:
-                                    # We specifically want the span that contains the title text, ignoring "Profile details" accessibility wrappers
-                                    title_element = header_element.locator("div[title], span[title]").filter(has_not_text="Profile details").first
-                                    if await title_element.count() > 0:
-                                        header_title = await title_element.get_attribute("title")
-                                    
-                                    if not header_title:
-                                        # Backup: grab all text but avoid generic wrappers
+                                    # Strategy 1: The standard span[dir='auto'] usually strictly holds the name/number
+                                    span_auto = header_element.locator("span[dir='auto']").first
+                                    if await span_auto.count() > 0:
+                                        header_title = await span_auto.inner_text()
+                                        
+                                    # Strategy 2: Look for elements with a title attribute, discarding "profile details"
+                                    if not header_title or header_title.lower().strip() == "profile details":
+                                        elements_with_title = await header_element.locator("[title]").all()
+                                        for el in elements_with_title:
+                                            t = await el.get_attribute("title")
+                                            if t and t.strip() and t.lower().strip() != "profile details" and not t.lower().strip().startswith("profile"):
+                                                header_title = t
+                                                break
+                                                
+                                    # Strategy 3: Raw text extraction, taking the first valid line
+                                    if not header_title or header_title.lower().strip() == "profile details":
                                         full_text = await header_element.inner_text()
-                                        header_title = full_text.split('\n')[0] if full_text else ""
+                                        if full_text:
+                                            for line in full_text.split('\n'):
+                                                line = line.strip()
+                                                if line and line.lower() != "profile details" and not line.lower().startswith("profile"):
+                                                    header_title = line
+                                                    break
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
