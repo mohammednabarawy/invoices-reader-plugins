@@ -26,8 +26,21 @@ def generate_registry():
                         manifest['id'] = item.name
                         # Add relative path for download reference
                         manifest['path'] = f"plugins/{item.name}"
+                        
+                        # Collect all files for targeted download
+                        files = []
+                        for root, dirs, filenames in os.walk(item):
+                            # Exclude hidden and cache directories
+                            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__' and 'session' not in d.lower()]
+                            for f in filenames:
+                                if f.startswith('.') or f.endswith('.pyc'):
+                                    continue
+                                rel_path = os.path.relpath(os.path.join(root, f), item)
+                                files.append(rel_path.replace("\\", "/"))
+                        
+                        manifest['files'] = files
                         registry.append(manifest)
-                        print(f"  + Added: {manifest.get('name', item.name)}")
+                        print(f"  + Added: {manifest.get('name', item.name)} ({len(files)} files)")
                 except Exception as e:
                     print(f"  - Error reading {item.name}: {e}")
     
