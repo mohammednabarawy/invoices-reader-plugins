@@ -14,7 +14,7 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
     
     # Plugin metadata (used by framework before manifest is loaded)
     id = "whatsapp_agent"
-    name = "WhatsApp AI Agent"
+    name = "WhatsApp Automation Agent"
     version = "1.0.0"
     description = "Integrates Invoices Reader with WhatsApp via Playwright."
     

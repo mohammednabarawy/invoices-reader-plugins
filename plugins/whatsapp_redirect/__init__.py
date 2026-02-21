@@ -10,10 +10,10 @@ class WhatsAppRedirectPlugin(DeclarativePlugin):
     """
     
     id = "whatsapp_redirect"
-    name = "WhatsApp Redirect"
+    name = "WhatsApp Quick Share"
     version = "1.0.0"
     author = "Invoices Reader"
-    description = "Send invoice summaries to WhatsApp and copy invoice image to clipboard for quick sharing."
+    description = "Quickly send invoice summaries to WhatsApp via your default browser. Includes one-click image copying for easy pasting."
 
     # Using Unicode escapes to ensure safe rendering on all platforms/encodings
     DEFAULT_TEMPLATE = """\U0001F4C4 *Invoice #{invoice_number}*

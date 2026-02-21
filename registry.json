@@ -1,10 +1,10 @@
 [
     {
         "id": "whatsapp_agent",
-        "name": "WhatsApp AI Agent",
+        "name": "WhatsApp Automation Agent",
         "version": "1.0.0",
         "author": "Community",
-        "description": "Integrates Invoices Reader with WhatsApp via an embedded Playwright browser. Scan the QR code to connect and use your WhatsApp as an AI agent.",
+        "description": "Powerful automation that integrates Invoices Reader with WhatsApp via an embedded browser. Send invoices automatically without leaving the app.",
         "min_app_version": "1.0.0",
         "main": "__init__.py",
         "plugin_class": "WhatsAppAgentPlugin",
@@ -26,10 +26,10 @@
     },
     {
         "id": "whatsapp_redirect",
-        "name": "WhatsApp Redirect",
+        "name": "WhatsApp Quick Share",
         "version": "1.0.0",
         "author": "Invoices Reader",
-        "description": "Send invoice summaries to WhatsApp and copy invoice image to clipboard for quick sharing.",
+        "description": "Quickly send invoice summaries to WhatsApp via your default browser. Includes one-click image copying for easy pasting.",
         "min_app_version": "1.0.0",
         "main": "__init__.py",
         "plugin_class": "WhatsAppRedirectPlugin",
