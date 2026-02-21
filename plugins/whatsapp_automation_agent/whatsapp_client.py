@@ -314,31 +314,57 @@ class WhatsAppClient:
                                     try:
                                         # Click image to open the media viewer
                                         await img_element.click()
-                                        await asyncio.sleep(1)
+                                        await asyncio.sleep(2) # Give it 2 seconds to fully load the viewer overlay
                                         
-                                        # Click the download button in the top right of the viewer
-                                        viewer_download_btn = self.page.locator("div[role='button'][aria-label='Download'], div[role='button'][aria-label='تنزيل'], span[data-icon='download']").first
-                                        if await viewer_download_btn.count() > 0 and await viewer_download_btn.is_visible():
-                                            async with self.page.expect_download(timeout=15000) as download_info:
-                                                await viewer_download_btn.click()
-                                            download = await download_info.value
-                                            
-                                            file_path = os.path.join(downloads_dir, download.suggested_filename)
-                                            await download.save_as(file_path)
-                                            logger.info(f"Downloaded image: {file_path}")
-                                            has_downloaded = True
-                                            
-                                            # Queue for processing
-                                            if hasattr(self.plugin.api, 'processing'):
-                                                self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        # Locate the download button in the viewer using multiple robust strategies
+                                        btn_selectors = [
+                                            "div[role='button'][aria-label='Download']",
+                                            "div[role='button'][aria-label='تنزيل']",
+                                            "span[data-icon='download']",
+                                            "button[title='Download']",
+                                            "div[title='Download']",
+                                            "div[title='تنزيل']"
+                                        ]
+                                        
+                                        viewer_download_btn = None
+                                        for selector in btn_selectors:
+                                            btn = self.page.locator(selector).first
+                                            if await btn.count() > 0:
+                                                logger.info(f"[WA] Found potential download button in viewer: '{selector}'")
+                                                viewer_download_btn = btn
+                                                break
+                                                
+                                        if viewer_download_btn and await viewer_download_btn.is_visible():
+                                            try:
+                                                async with self.page.expect_download(timeout=15000) as download_info:
+                                                    await viewer_download_btn.click()
+                                                download = await download_info.value
+                                                
+                                                file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                await download.save_as(file_path)
+                                                logger.info(f"Downloaded image: {file_path}")
+                                                has_downloaded = True
+                                                
+                                                # Queue for processing
+                                                if hasattr(self.plugin.api, 'processing'):
+                                                    self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                            except Exception as e:
+                                                logger.error(f"Failed during download trigger in viewer: {e}")
                                         else:
-                                            logger.warning("Could not find download button in image viewer.")
+                                            logger.warning("Could not find visible download button in image viewer after 2s.")
+                                            # Diagnostic: list potential icons in the header
+                                            try:
+                                                icons = await self.page.locator("span[data-icon]").all()
+                                                icon_names = [await i.get_attribute("data-icon") for i in icons]
+                                                logger.info(f"[WA] Diagnostic - All icons on screen: {icon_names}")
+                                            except:
+                                                pass
                                             
                                         # Close viewer
                                         await self.page.keyboard.press("Escape")
                                         await asyncio.sleep(0.5)
                                     except Exception as e:
-                                        logger.error(f"Error downloading image: {e}")
+                                        logger.error(f"Error handling image viewer: {e}")
                                         # Ensure viewer is closed
                                         await self.page.keyboard.press("Escape")
 
