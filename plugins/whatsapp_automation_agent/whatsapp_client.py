@@ -224,20 +224,28 @@ class WhatsAppClient:
                                                     
                                     # Strategy 4 (OpenClaw style): Extract actual raw phone number from incoming message data-ids, bypassing contact names
                                     try:
-                                        msg_in = self.page.locator("div.message-in").last
-                                        if await msg_in.count() > 0:
-                                            data_id = await msg_in.get_attribute("data-id")
-                                            if data_id:
-                                                import re
-                                                # Pattern usually looks like "false_966592328502@c.us_..."
-                                                number_match = re.search(r'false_(\d+)(?:@c\.us|@s\.whatsapp\.net)', data_id)
-                                                if number_match:
-                                                    extracted_number = number_match.group(1)
-                                                    logger.info(f"[WA] Strategy 4 natively extracted raw phone number: '{extracted_number}'")
-                                                    # We append this raw number to the header title to guarantee a match against the user's settings!
-                                                    header_title += " " + extracted_number
+                                        # Wait a moment for messages to load in the pane
+                                        msg_locator = self.page.locator("div.message-in, div[data-id*='false_']")
+                                        msg_count = await msg_locator.count()
+                                        logger.info(f"[WA] Strategy 4 found {msg_count} incoming messages in pane.")
+                                        
+                                        if msg_count > 0:
+                                            # Check the last few messages to find a valid data-id
+                                            for i in range(msg_count - 1, max(-1, msg_count - 5), -1):
+                                                msg_element = msg_locator.nth(i)
+                                                data_id = await msg_element.get_attribute("data-id")
+                                                if data_id:
+                                                    import re
+                                                    # Pattern usually looks like "false_966592328502@c.us_..."
+                                                    number_match = re.search(r'false_(\d+)(?:@c\.us|@s\.whatsapp\.net|@g\.us)', data_id)
+                                                    if number_match:
+                                                        extracted_number = number_match.group(1)
+                                                        logger.info(f"[WA] Strategy 4 successfully extracted raw phone number: '{extracted_number}' from '{data_id}'")
+                                                        # We append this raw number to the header title to guarantee a match against the user's settings!
+                                                        header_title += " " + extracted_number
+                                                        break
                                     except Exception as e:
-                                        logger.warning(f"[WA] Could not extract raw number from DOM: {e}")
+                                        logger.warning(f"[WA] Strategy 4 failed to extract raw number: {e}")
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
