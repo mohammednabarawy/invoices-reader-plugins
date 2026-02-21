@@ -1,5 +1,26 @@
 [
     {
+        "id": "whatsapp_quick_share",
+        "name": "WhatsApp Quick Share",
+        "version": "1.0.0",
+        "author": "Invoices Reader",
+        "description": "Quickly send invoice summaries to WhatsApp via your default browser. Includes one-click image copying for easy pasting.",
+        "capabilities": [
+            "ui:toolbar",
+            "data:read",
+            "data:write"
+        ],
+        "min_app_version": "1.0.0",
+        "main": "__init__.py",
+        "plugin_class": "WhatsAppRedirectPlugin",
+        "path": "plugins/whatsapp_quick_share",
+        "files": [
+            "manifest.json",
+            "README.md",
+            "__init__.py"
+        ]
+    },
+    {
         "id": "whatsapp_automation_agent",
         "name": "WhatsApp Automation Agent",
         "version": "1.0.0",
@@ -24,32 +45,11 @@
         "category": "communication",
         "path": "plugins/whatsapp_automation_agent",
         "files": [
-            "manifest.json",
-            "README.md",
             "requirements.txt",
-            "settings_ui.py",
-            "whatsapp_client.py",
-            "__init__.py"
-        ]
-    },
-    {
-        "id": "whatsapp_quick_share",
-        "name": "WhatsApp Quick Share",
-        "version": "1.0.0",
-        "author": "Invoices Reader",
-        "description": "Quickly send invoice summaries to WhatsApp via your default browser. Includes one-click image copying for easy pasting.",
-        "capabilities": [
-            "ui:toolbar",
-            "data:read",
-            "data:write"
-        ],
-        "min_app_version": "1.0.0",
-        "main": "__init__.py",
-        "plugin_class": "WhatsAppRedirectPlugin",
-        "path": "plugins/whatsapp_quick_share",
-        "files": [
             "manifest.json",
             "README.md",
+            "whatsapp_client.py",
+            "settings_ui.py",
             "__init__.py"
         ]
     }
