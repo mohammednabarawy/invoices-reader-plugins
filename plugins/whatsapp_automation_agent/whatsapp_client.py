@@ -199,12 +199,14 @@ class WhatsAppClient:
                                     span_auto = header_element.locator("span[dir='auto']").first
                                     if await span_auto.count() > 0:
                                         header_title = await span_auto.inner_text()
+                                        logger.info(f"[WA] Strategy 1 extracted: '{header_title}'")
                                         
                                     # Strategy 2: Look for elements with a title attribute, discarding "profile details"
                                     if not header_title or header_title.lower().strip() == "profile details":
                                         elements_with_title = await header_element.locator("[title]").all()
                                         for el in elements_with_title:
                                             t = await el.get_attribute("title")
+                                            logger.info(f"[WA] Strategy 2 inspecting title attribute: '{t}'")
                                             if t and t.strip() and t.lower().strip() != "profile details" and not t.lower().strip().startswith("profile"):
                                                 header_title = t
                                                 break
@@ -212,6 +214,7 @@ class WhatsAppClient:
                                     # Strategy 3: Raw text extraction, taking the first valid line
                                     if not header_title or header_title.lower().strip() == "profile details":
                                         full_text = await header_element.inner_text()
+                                        logger.info(f"[WA] Strategy 3 raw header inner_text: '{full_text}'")
                                         if full_text:
                                             for line in full_text.split('\n'):
                                                 line = line.strip()
