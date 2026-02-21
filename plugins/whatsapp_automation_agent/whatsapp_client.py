@@ -194,17 +194,14 @@ class WhatsAppClient:
                             header_title = ""
                             try:
                                 # Look for chat title in the open chat header
-                                header_element = self.page.locator("header").first
+                                header_element = self.page.locator("#main header").first
                                 if await header_element.count() > 0:
-                                    title_element = header_element.locator("span[dir='auto']").first
+                                    title_element = header_element.locator("span[title], div[title]").first
                                     if await title_element.count() > 0:
-                                        header_title = await title_element.inner_text()
-                                    else:
-                                        title_element = header_element.locator("div span[title]").first
-                                        if await title_element.count() > 0:
-                                            header_title = await title_element.get_attribute("title")
-                                            if not header_title:
-                                                header_title = await title_element.inner_text()
+                                        header_title = await title_element.get_attribute("title")
+                                    
+                                    if not header_title:
+                                        header_title = await header_element.inner_text()
                             except Exception as e:
                                 logger.warning(f"Could not read chat header: {e}")
                             
