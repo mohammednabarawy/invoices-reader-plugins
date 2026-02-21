@@ -1,4 +1,4 @@
-# WhatsApp Redirect Plugin
+# WhatsApp Quick Share Plugin
 
 This plugin allows you to quickly share invoice summaries via WhatsApp and copy the invoice image to your clipboard.
 

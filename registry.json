@@ -24,10 +24,11 @@
         "category": "communication",
         "path": "plugins/whatsapp_agent",
         "files": [
-            "requirements.txt",
             "manifest.json",
-            "whatsapp_client.py",
+            "README.md",
+            "requirements.txt",
             "settings_ui.py",
+            "whatsapp_client.py",
             "__init__.py"
         ]
     },

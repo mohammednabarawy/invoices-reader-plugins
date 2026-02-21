@@ -16,7 +16,7 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
     id = "whatsapp_agent"
     name = "WhatsApp Automation Agent"
     version = "1.0.0"
-    description = "Integrates Invoices Reader with WhatsApp via Playwright."
+    description = "Powerful automation that integrates Invoices Reader with WhatsApp via an embedded browser."
     
     # Settings
     auto_start = Field(
