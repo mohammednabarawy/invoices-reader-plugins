@@ -224,7 +224,7 @@ class WhatsAppClient:
                                                     
                                     # Strategy 4 (OpenClaw style): Extract actual raw phone number from incoming message data-ids, bypassing contact names
                                     try:
-                                        msg_in = self.page.locator("div.message-in").last()
+                                        msg_in = self.page.locator("div.message-in").last
                                         if await msg_in.count() > 0:
                                             data_id = await msg_in.get_attribute("data-id")
                                             if data_id:
