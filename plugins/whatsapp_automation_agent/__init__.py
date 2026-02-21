@@ -28,7 +28,9 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
 
     def get_setting(self, key: str, default_val=None, type=None):
         """Helper to get a setting using QSettings"""
-        return self.settings.value(key, default_val, type=type)
+        if type:
+            return self.settings.value(key, default_val, type=type)
+        return self.settings.value(key, default_val)
 
     def set_setting(self, key: str, value):
         """Helper to set a setting using QSettings"""
