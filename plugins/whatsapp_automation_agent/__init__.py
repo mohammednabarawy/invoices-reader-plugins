@@ -48,37 +48,255 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
             )
         except Exception as e:
             logger.error(f"Failed to register WhatsApp settings tab: {e}")
+            
+        # Subscribe to processing feedback signals
+        if hasattr(self.api, 'processing'):
+            if hasattr(self.api.processing, 'on_duplicate'):
+                self.api.processing.on_duplicate(self._on_duplicate_detected)
+            if hasattr(self.api.processing, 'on_processing_failed'):
+                self.api.processing.on_processing_failed(self._on_processing_failed)
         
         auto_start_val = self.get_setting('auto_start', False, type=bool)
         if auto_start_val:
             self.start_agent()
 
-    def on_source_processing_event(self, source, status, metadata, payload):
-        """Generic plugin callback for source-processing events."""
+    def _on_duplicate_detected(self, file_path, existing_data, source, metadata):
+        """Callback for when a duplicate invoice is detected."""
         if str(source).lower() != 'whatsapp':
             return
-
-        if not self.wa_client or not self.wa_client.is_running:
+            
+        recipient = metadata.get('whatsapp_sender')
+        if not recipient:
             return
-
-        normalized_status = str(status or "").lower()
-        safe_metadata = metadata or {}
-
-        if normalized_status == 'duplicate':
-            self.wa_client.notify_duplicate(payload or {}, safe_metadata)
+            
+        inv_num = existing_data.get('invoice_number', 'N/A')
+        total = existing_data.get('invoice_total', 0)
+        currency = existing_data.get('currency', '')
+        vendor = existing_data.get('vendor_name', 'Unknown')
+        amount_str = f"{total} {currency}" if total else "N/A"
+        
+        msg = (
+            "⚠️ *Duplicate Invoice Detected*\n\n"
+            f"This invoice already exists in the system:\n"
+            f"*Vendor:* {vendor}\n"
+            f"*Invoice #:* {inv_num}\n"
+            f"*Total:* {amount_str}\n\n"
+            "_No new action was taken._"
+        )
+        self.wa_client.queue_reply(recipient, msg)
+        
+    def _on_processing_failed(self, file_path, error, source, metadata):
+        """Callback for when an invoice fails context processing."""
+        if str(source).lower() != 'whatsapp':
             return
-
-        if normalized_status == 'completed':
-            self.wa_client.notify_processing_result(payload or {}, safe_metadata)
+            
+        recipient = metadata.get('whatsapp_sender')
+        if not recipient:
             return
+            
+        msg = (
+            "❌ *Processing Failed*\n\n"
+            f"An error occurred while processing your invoice:\n"
+            f"_{error}_\n\n"
+            "Please try again or contact support."
+        )
+        self.wa_client.queue_reply(recipient, msg)
 
-        if normalized_status == 'failed':
-            if isinstance(payload, dict):
-                error_text = payload.get('error', 'Unknown processing error')
+    @Action(label="Start WhatsApp Agent", location="settings", icon="fa5b.whatsapp")
+    def start_agent(self, *args):
+        """Start the Playwright agent in the background."""
+        if self.wa_client.is_running:
+            self.api.ui.toast("WhatsApp Agent is already running.", "warning")
+            return
+            
+        self.api.ui.toast("Starting WhatsApp Agent...", "info")
+        self._status_message = "Starting browser..."
+        
+        self.agent_thread = threading.Thread(target=self.wa_client.run, daemon=True)
+        self.agent_thread.start()
+
+    @Action(label="Stop Agent", location="settings", icon="fa5s.stop-circle")
+    def stop_agent(self, *args):
+        """Stop the agent and close the browser."""
+        if not self.wa_client.is_running:
+            return
+            
+        self.api.ui.toast("Stopping WhatsApp Agent...", "info")
+        self.wa_client.stop()
+        if self.agent_thread:
+            self.agent_thread.join(timeout=5)
+            
+        self._status_message = "Agent stopped."
+        self.api.ui.toast("WhatsApp Agent stopped.", "success")
+
+    @Action(label="Send WhatsApp", location="toolbar:right", icon="fa5b.whatsapp")
+    def send_via_whatsapp(self, invoice: dict = None):
+        """Action hook to send the current invoice via WhatsApp."""
+        if not self.wa_client.is_logged_in:
+            self.api.ui.toast("WhatsApp Agent is not logged in!", "error")
+            return
+            
+        if not invoice:
+            self.api.ui.toast("No invoice selected.", "warning")
+            return
+            
+        # Ensure we have a valid file to send
+        file_path = invoice.get('file_path')
+        if not file_path and invoice.get('image_file'):
+            file_path = os.path.join(self.api.get_base_path(), invoice.get('image_file'))
+            
+        if not file_path or not os.path.exists(file_path):
+            self.api.ui.toast("No valid file attached to this invoice.", "error")
+            return
+            
+        # Ask user for phone number
+        phone = self.api.ui.show_input(
+            "Send WhatsApp",
+            "Enter phone number (include country code, e.g., 9665...):",
+            ""
+        )
+        if not phone:
+            return  # user cancelled
+            
+        # Format message using the template logic from whatsapp-redirect
+        text = self._format_message(invoice)
+        
+        self.api.ui.toast("Queuing WhatsApp message...", "info")
+        
+        # Define an internal callback to handle the result
+        def _send_callback(future):
+            try:
+                success, msg = future.result()
+                if success:
+                    # Thread-safe ui call
+                    self.update_status(f"Sent invoice to {phone}")
+                else:
+                    self.update_status(f"Failed to send: {msg}")
+            except Exception as e:
+                self.update_status(f"Error checking send result: {e}")
+                
+        # Schedule the async coroutine in the agent's event loop
+        import asyncio
+        if hasattr(self.wa_client, 'loop') and self.wa_client.loop and self.wa_client.loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                self.wa_client.send_invoice_async(phone, text, file_path),
+                self.wa_client.loop
+            )
+            future.add_done_callback(_send_callback)
+        else:
+            self.api.ui.toast("Agent loop is not running.", "error")
+
+    def _format_message(self, data: dict) -> str:
+        """Replace variables in template with data (cloned from whatsapp-redirect)"""
+        template = self.get_setting('message_template', """\U0001F4C4 *Invoice #{invoice_number}*
+\U0001F4C5 *Date:* {date}
+
+\U0001F464 *From:* {vendor_name}
+\U0001F4B3 *VAT ID:* {vat_id}
+
+\U0001F4CB *Items:*
+{line_items}
+
+\U0001F4B0 *Subtotal:* {currency} {subtotal}
+\U0001F4CA *VAT ({vat_rate}%):* {currency} {vat_total}
+\U0001F4B5 *Total:* {currency} {total}
+
+Thanks!""", type=str)
+        
+        # Get date with multiple fallbacks
+        date = data.get('date') or data.get('invoice_date') or data.get('created_date') or ''
+        if date:
+            if 'T' in str(date):
+                date = str(date).split('T')[0]
+        else:
+            date = 'N/A'
+        
+        # Get totals
+        invoice_total = data.get('invoice_total') or data.get('total_amount') or data.get('total') or 0.0
+        vat_total = data.get('vat_total') or data.get('tax_amount') or 0.0
+        
+        # Calculate subtotal (total - vat)
+        try:
+            subtotal = float(invoice_total) - float(vat_total)
+        except (ValueError, TypeError):
+            subtotal = invoice_total
+        
+        # Calculate VAT rate
+        try:
+            if subtotal and float(subtotal) > 0:
+                vat_rate = round((float(vat_total) / float(subtotal)) * 100)
             else:
-                error_text = str(payload) if payload else 'Unknown processing error'
-            self.wa_client.notify_processing_failed(error_text, safe_metadata)
+                vat_rate = 0
+        except (ValueError, TypeError, ZeroDivisionError):
+            vat_rate = 0
+
+        # Handle line items if available
+        line_items_str = ""
+        items = data.get('line_items', [])
+        if items:
+            for item in items[:5]: # show first 5
+                desc = item.get('description', 'Item')
+                total = item.get('total', '0')
+                line_items_str += f"- {desc}: {total}\n"
+            if len(items) > 5:
+                line_items_str += f"- ... ({len(items)-5} more items)\n"
+        else:
+            line_items_str = "- No items details extracted."
+
+        return template.format(
+            invoice_number=data.get('invoice_number', 'N/A'),
+            date=date,
+            vendor_name=data.get('vendor_name', 'Unknown'),
+            vat_id=data.get('vat_id', 'N/A'),
+            line_items=line_items_str,
+            currency=data.get('currency', ''),
+            subtotal=round(subtotal, 2) if isinstance(subtotal, (int, float)) else subtotal,
+            vat_total=round(float(vat_total), 2) if vat_total else 0,
+            vat_rate=vat_rate,
+            total=round(float(invoice_total), 2) if invoice_total else 0
+        )
+
+    def _on_duplicate_found(self, data, existing_data, metadata):
+        """Callback for when a duplicate invoice is found."""
+        if str(metadata.get('source')).lower() != 'whatsapp':
             return
+            
+        recipient = metadata.get('whatsapp_sender')
+        if not recipient:
+            return
+            
+        inv_num = existing_data.get('invoice_number', 'N/A')
+        total = existing_data.get('invoice_total', 0)
+        currency = existing_data.get('currency', '')
+        vendor = existing_data.get('vendor_name', 'Unknown')
+        amount_str = f"{total} {currency}" if total else "N/A"
+        
+        msg = (
+            "⚠️ *Duplicate Invoice Detected*\n\n"
+            f"This invoice already exists in the system:\n"
+            f"*Vendor:* {vendor}\n"
+            f"*Invoice #:* {inv_num}\n"
+            f"*Total:* {amount_str}\n\n"
+            "_No new action was taken._"
+        )
+        self.wa_client.queue_reply(recipient, msg)
+        
+    def _on_processing_failed(self, file_path, error, source, metadata):
+        """Callback for when an invoice fails context processing."""
+        if str(source).lower() != 'whatsapp':
+            return
+            
+        recipient = metadata.get('whatsapp_sender')
+        if not recipient:
+            return
+            
+        msg = (
+            "❌ *Processing Failed*\n\n"
+            f"An error occurred while processing your invoice:\n"
+            f"_{error}_\n\n"
+            "Please try again or contact support."
+        )
+        self.wa_client.queue_reply(recipient, msg)
 
     @Action(label="Start WhatsApp Agent", location="settings", icon="fa5b.whatsapp")
     def start_agent(self, *args):

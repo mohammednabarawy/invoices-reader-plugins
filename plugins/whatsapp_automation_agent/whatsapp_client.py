@@ -25,10 +25,10 @@ class WhatsAppClient:
         self.page = None
         self.loop = None
         
-        # We store the session data in the plugin folder
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.user_data_dir = os.path.join(plugin_dir, "whatsapp_session")
         self.session_dir = self.user_data_dir  # alias for settings_ui
+        self.pending_replies = []  # Thread-safe queue for delayed UI feedback
         self._recent_reply_keys = deque(maxlen=500)
         self._recent_reply_lookup = set()
         self._send_lock = asyncio.Lock()
@@ -364,68 +364,70 @@ class WhatsAppClient:
                         await asyncio.sleep(1.5) # wait for messages to load and read state to update
                         processed_in_this_loop = True
                         
-                        # Apply Sender Filtering
+                        # Apply Sender Filtering & Extract Chat Header unconditionally
                         header_title = ""
                         allowed_sender = self.plugin.get_setting('allowed_sender', "")
-                        if allowed_sender and allowed_sender.strip():
-                            try:
-                                # Look for chat title in the open chat header
-                                header_element = self.page.locator("#main header").first
-                                if await header_element.count() > 0:
-                                    # Strategy 1: The standard span[dir='auto'] usually strictly holds the name/number
-                                    span_auto = header_element.locator("span[dir='auto']").first
-                                    if await span_auto.count() > 0:
-                                        header_title = await span_auto.inner_text()
-                                        logger.info(f"[WA] Strategy 1 extracted: '{header_title}'")
-                                        
-                                    # Strategy 2: Look for elements with a title attribute, discarding "profile details"
-                                    if not header_title or header_title.lower().strip() == "profile details":
-                                        elements_with_title = await header_element.locator("[title]").all()
-                                        for el in elements_with_title:
-                                            t = await el.get_attribute("title")
-                                            logger.info(f"[WA] Strategy 2 inspecting title attribute: '{t}'")
-                                            if t and t.strip() and t.lower().strip() != "profile details" and not t.lower().strip().startswith("profile"):
-                                                header_title = t
+                        
+                        try:
+                            # Look for chat title in the open chat header
+                            header_element = self.page.locator("#main header").first
+                            if await header_element.count() > 0:
+                                # Strategy 1: The standard span[dir='auto'] usually strictly holds the name/number
+                                span_auto = header_element.locator("span[dir='auto']").first
+                                if await span_auto.count() > 0:
+                                    header_title = await span_auto.inner_text()
+                                    logger.info(f"[WA] Strategy 1 extracted: '{header_title}'")
+                                    
+                                # Strategy 2: Look for elements with a title attribute, discarding "profile details"
+                                if not header_title or header_title.lower().strip() == "profile details":
+                                    elements_with_title = await header_element.locator("[title]").all()
+                                    for el in elements_with_title:
+                                        t = await el.get_attribute("title")
+                                        logger.info(f"[WA] Strategy 2 inspecting title attribute: '{t}'")
+                                        if t and t.strip() and t.lower().strip() != "profile details" and not t.lower().strip().startswith("profile"):
+                                            header_title = t
+                                            break
+                                            
+                                # Strategy 3: Raw text extraction, taking the first valid line
+                                if not header_title or header_title.lower().strip() == "profile details":
+                                    full_text = await header_element.inner_text()
+                                    logger.info(f"[WA] Strategy 3 raw header inner_text: '{full_text}'")
+                                    if full_text:
+                                        for line in full_text.split('\n'):
+                                            line = line.strip()
+                                            if line and line.lower() != "profile details" and not line.lower().startswith("profile"):
+                                                header_title = line
                                                 break
                                                 
-                                    # Strategy 3: Raw text extraction, taking the first valid line
-                                    if not header_title or header_title.lower().strip() == "profile details":
-                                        full_text = await header_element.inner_text()
-                                        logger.info(f"[WA] Strategy 3 raw header inner_text: '{full_text}'")
-                                        if full_text:
-                                            for line in full_text.split('\n'):
-                                                line = line.strip()
-                                                if line and line.lower() != "profile details" and not line.lower().startswith("profile"):
-                                                    header_title = line
+                                # Strategy 4 (OpenClaw style): Extract actual raw phone number from incoming message data-ids, bypassing contact names
+                                try:
+                                    # Wait a moment for messages to load in the pane
+                                    msg_locator = self.page.locator("div.message-in, div[data-id*='false_']")
+                                    msg_count = await msg_locator.count()
+                                    logger.info(f"[WA] Strategy 4 found {msg_count} incoming messages in pane.")
+                                    
+                                    if msg_count > 0:
+                                        # Check the last few messages to find a valid data-id
+                                        for i in range(msg_count - 1, max(-1, msg_count - 5), -1):
+                                            msg_element = msg_locator.nth(i)
+                                            data_id = await msg_element.get_attribute("data-id")
+                                            if data_id:
+                                                import re
+                                                # Pattern usually looks like "false_966592328502@c.us_..."
+                                                number_match = re.search(r'false_(\d+)(?:@c\.us|@s\.whatsapp\.net|@g\.us)', data_id)
+                                                if number_match:
+                                                    extracted_number = number_match.group(1)
+                                                    logger.info(f"[WA] Strategy 4 successfully extracted raw phone number: '{extracted_number}' from '{data_id}'")
+                                                    # We append this raw number to the header title to guarantee a match against the user's settings!
+                                                    header_title += " " + extracted_number
                                                     break
-                                                    
-                                    # Strategy 4 (OpenClaw style): Extract actual raw phone number from incoming message data-ids, bypassing contact names
-                                    try:
-                                        # Wait a moment for messages to load in the pane
-                                        msg_locator = self.page.locator("div.message-in, div[data-id*='false_']")
-                                        msg_count = await msg_locator.count()
-                                        logger.info(f"[WA] Strategy 4 found {msg_count} incoming messages in pane.")
-                                        
-                                        if msg_count > 0:
-                                            # Check the last few messages to find a valid data-id
-                                            for i in range(msg_count - 1, max(-1, msg_count - 5), -1):
-                                                msg_element = msg_locator.nth(i)
-                                                data_id = await msg_element.get_attribute("data-id")
-                                                if data_id:
-                                                    import re
-                                                    # Pattern usually looks like "false_966592328502@c.us_..."
-                                                    number_match = re.search(r'false_(\d+)(?:@c\.us|@s\.whatsapp\.net|@g\.us)', data_id)
-                                                    if number_match:
-                                                        extracted_number = number_match.group(1)
-                                                        logger.info(f"[WA] Strategy 4 successfully extracted raw phone number: '{extracted_number}' from '{data_id}'")
-                                                        # We append this raw number to the header title to guarantee a match against the user's settings!
-                                                        header_title += " " + extracted_number
-                                                        break
-                                    except Exception as e:
-                                        logger.warning(f"[WA] Strategy 4 failed to extract raw number: {e}")
-                            except Exception as e:
-                                logger.warning(f"Could not read chat header: {e}")
-                            
+                                except Exception as e:
+                                    logger.warning(f"[WA] Strategy 4 failed to extract raw number: {e}")
+                        except Exception as e:
+                            logger.warning(f"Could not read chat header: {e}")
+
+                        # Continue with sender filtering if setting exists
+                        if allowed_sender and allowed_sender.strip():
                             if not header_title:
                                 logger.info(f"Skipping messages: empty chat title extracted (matched against allowed '{allowed_sender}')")
                                 continue
@@ -788,11 +790,6 @@ class WhatsAppClient:
                                         )
                                 except Exception as e:
                                     logger.error(f"Error downloading media document: {e}")
-                                    await self._reply_once(
-                                        f"{message_key}:download_failed",
-                                        "❌ Download failed."
-                                    )
-
                             # 2. Check for displayed images (WhatsApp strips direct download buttons from displayed images)
                             if not has_downloaded:
                                 img_element = message_target.locator("img[src^='blob:']").first
@@ -964,6 +961,17 @@ class WhatsAppClient:
                     await asyncio.sleep(2)
                 else:
                     await asyncio.sleep(5)
+                
+                # Check for pending replies (e.g., from duplicate / error signals sent from another thread)
+                while self.pending_replies:
+                    reply_task = self.pending_replies.pop(0)
+                    recipient = reply_task.get('recipient')
+                    message = reply_task.get('message')
+                    if recipient and message:
+                        logger.info(f"Processing pending reply to {recipient}")
+                        await self.send_message_to_chat_safely(recipient, message)
+                        await asyncio.sleep(3) # Wait before next action
+                
             except Exception as e:
                 # Silently catch broad scraping errors to keep the loop resilient
                 await asyncio.sleep(5)
@@ -1032,6 +1040,7 @@ class WhatsAppClient:
             except Exception as target_error:
                 last_error = target_error
 
+        # Fallback to JS click if Playwright's click failed
         try:
             handle = await badge.element_handle()
             if handle:
@@ -1054,6 +1063,13 @@ class WhatsAppClient:
         if last_error:
             logger.debug(f"Could not open unread chat row this cycle: {last_error}")
         return False
+
+    def queue_reply(self, recipient: str, message: str):
+        """Thread-safe way to queue a reply to be sent by the asyncio loop."""
+        self.pending_replies.append({
+            'recipient': recipient,
+            'message': message
+        })
 
     async def _get_message_key(self, message_element, header_title: str = "") -> str:
         """Create a stable key for deduplicating auto-replies."""
@@ -1340,6 +1356,52 @@ class WhatsAppClient:
                 return True
         except Exception as e:
             logger.error(f"Failed to auto-reply: {e}")
+            return False
+
+    async def send_message_to_chat_safely(self, chat_name: str, message: str) -> bool:
+        """Sends a message either by direct phone navigation OR by searching the contact name."""
+        try:
+            import re
+            phone_candidates = re.findall(r'\d{7,20}', chat_name)
+            if phone_candidates:
+                target = phone_candidates[-1]
+                logger.info(f"Sending via phone navigation to extracted number: {target}")
+                success, _ = await self.send_invoice_async(target, message, None)
+                return success
+
+            # If no obvious phone number, use the search box
+            logger.info(f"Using search to find contact/group: {chat_name}")
+            search_box = self.page.locator("div[title='Search input textbox'], div[title='مربع نص البحث في جهات الاتصال'], div[title='Search']").first
+            if await search_box.count() == 0:
+                search_box = self.page.locator("div.lexical-rich-text-input > div").first
+                
+            if await search_box.count() > 0:
+                await search_box.click()
+                await self.page.keyboard.press("Control+A")
+                await self.page.keyboard.press("Backspace")
+                await search_box.fill(chat_name)
+                await asyncio.sleep(2)
+                
+                result = self.page.locator("div[role='listitem']").first
+                if await result.count() > 0:
+                    await result.click()
+                    await asyncio.sleep(1)
+                    await self.auto_reply(message)
+                    
+                    # Clear search
+                    clear_btn = self.page.locator("button[aria-label='Cancel search'], button[aria-label='إلغاء البحث']").first
+                    if await clear_btn.count() > 0:
+                        await clear_btn.click()
+                        
+                    return True
+                else:
+                    logger.warning(f"Contact not found via search: {chat_name}")
+                    return False
+            else:
+                logger.warning("Search box not found in WhatsApp Web UI")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to send safely to {chat_name}: {e}")
             return False
 
     async def send_invoice_async(self, phone: str, text: str, file_path: str = None) -> tuple[bool, str]:
