@@ -321,6 +321,7 @@ class WhatsAppClient:
                                             "div[role='button'][aria-label='Download']",
                                             "div[role='button'][aria-label='تنزيل']",
                                             "span[data-icon='download']",
+                                            "span[data-icon='ic-download']",
                                             "button[title='Download']",
                                             "div[title='Download']",
                                             "div[title='تنزيل']"
