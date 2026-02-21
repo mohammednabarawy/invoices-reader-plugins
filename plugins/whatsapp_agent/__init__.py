@@ -13,7 +13,7 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
     """
     
     # Plugin metadata (used by framework before manifest is loaded)
-    id = "whatsapp-agent"
+    id = "whatsapp_agent"
     name = "WhatsApp AI Agent"
     version = "1.0.0"
     description = "Integrates Invoices Reader with WhatsApp via Playwright."
@@ -203,6 +203,9 @@ Thanks!"""
         line_items_text = self._format_line_items(data.get('line_items', []))
         
         # Safe formatting using simple replace
+        if not template:
+            template = self._fields['message_template'].default
+            
         text = template
         replacements = {
             "{vendor_name}": data.get('vendor_name', 'Vendor'),

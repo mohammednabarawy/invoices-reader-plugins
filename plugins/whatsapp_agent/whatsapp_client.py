@@ -316,6 +316,27 @@ class WhatsAppClient:
                         # Broaden selectors to include new WhatsApp Design System (WDS) icons
                         send_selectors = "span[data-icon='send'], [aria-label='Send'], [data-icon='wds-ic-send-filled']"
                         await self.page.wait_for_selector(send_selectors, state="visible", timeout=20000)
+                        
+                        # Try to fill caption if text is provided
+                        if text:
+                            try:
+                                caption_selectors = [
+                                    "div[contenteditable='true'][aria-placeholder='Add a caption']",
+                                    "div[contenteditable='true'][aria-placeholder='إضافة شرح']",
+                                    "div[contenteditable='true'][title='Add a caption']",
+                                    "div[contenteditable='true'][title='إضافة شرح']",
+                                    "div[contenteditable='true']"
+                                ]
+                                for c_selector in caption_selectors:
+                                    caption_box = self.page.locator(c_selector).last
+                                    if await caption_box.count() > 0 and await caption_box.is_visible():
+                                        # Use fill for speed, or type if message box is finicky
+                                        await caption_box.fill(text)
+                                        logger.info("Caption filled in preview modal.")
+                                        break
+                            except Exception as caption_err:
+                                logger.warning(f"Failed to fill caption (will try to send anyway): {caption_err}")
+                        
                         await asyncio.sleep(1) # Final stabilization for UI animations
                         
                         # Use force=True to bypass pointer-event interception by internal icons/spans
