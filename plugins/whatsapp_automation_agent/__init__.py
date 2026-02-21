@@ -18,60 +18,21 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
     version = "1.0.0"
     description = "Powerful automation that integrates Invoices Reader with WhatsApp via an embedded browser."
     
-    # Settings
-    auto_start = Field(
-        type="checkbox",
-        label="Auto-start WhatsApp Background Agent",
-        persist=True,
-        default=False
-    )
-    
-    bot_mode = Field(
-        type="checkbox", 
-        label="Enable AI Bot Auto-reply", 
-        persist=True,
-        default=False
-    )
-
-    allowed_sender = Field(
-        type="text",
-        label="Allowed Sender (Name or Number)",
-        persist=True,
-        default=""
-    )
-
-    qr_code_display = Field(
-        type="text",
-        label="WhatsApp QR Code / Status",
-        persist=False,
-        default="Waiting for agent to start..."
-    )
-
-    message_template = Field(
-        type="textarea",
-        label="Message Template",
-        persist=True,
-        default="""\U0001F4C4 *Invoice #{invoice_number}*
-\U0001F4C5 *Date:* {date}
-
-\U0001F464 *From:* {vendor_name}
-\U0001F4B3 *VAT ID:* {vat_id}
-
-\U0001F4CB *Items:*
-{line_items}
-
-\U0001F4B0 *Subtotal:* {currency} {subtotal}
-\U0001F4CA *VAT ({vat_rate}%):* {currency} {vat_total}
-\U0001F4B5 *Total:* {currency} {total}
-
-Thanks!"""
-    )
-
     def __init__(self):
         super().__init__()
+        from PyQt5.QtCore import QSettings
+        self.settings = QSettings("InvoicesReader", "Plugin_WhatsAppAgent")
         self.wa_client = WhatsAppClient(self)
         self.agent_thread = None
         self._status_message = "Waiting for agent to start..."
+
+    def get_setting(self, key: str, default_val=None, type=None):
+        """Helper to get a setting using QSettings"""
+        return self.settings.value(key, default_val, type=type)
+
+    def set_setting(self, key: str, value):
+        """Helper to set a setting using QSettings"""
+        self.settings.setValue(key, value)
 
     def on_load(self):
         """Called after framework initializes the plugin (API is available)."""
@@ -86,8 +47,7 @@ Thanks!"""
         except Exception as e:
             logger.error(f"Failed to register WhatsApp settings tab: {e}")
         
-        # Auto-start if configured
-        auto_start_val = self.get_field('auto_start')
+        auto_start_val = self.get_setting('auto_start', False, type=bool)
         if auto_start_val:
             self.start_agent()
 
@@ -177,7 +137,20 @@ Thanks!"""
 
     def _format_message(self, data: dict) -> str:
         """Replace variables in template with data (cloned from whatsapp-redirect)"""
-        template = self.get_field('message_template')
+        template = self.get_setting('message_template', """\U0001F4C4 *Invoice #{invoice_number}*
+\U0001F4C5 *Date:* {date}
+
+\U0001F464 *From:* {vendor_name}
+\U0001F4B3 *VAT ID:* {vat_id}
+
+\U0001F4CB *Items:*
+{line_items}
+
+\U0001F4B0 *Subtotal:* {currency} {subtotal}
+\U0001F4CA *VAT ({vat_rate}%):* {currency} {vat_total}
+\U0001F4B5 *Total:* {currency} {total}
+
+Thanks!""", type=str)
         
         # Get date with multiple fallbacks
         date = data.get('date') or data.get('invoice_date') or data.get('created_date') or ''
@@ -211,7 +184,7 @@ Thanks!"""
         
         # Safe formatting using simple replace
         if not template:
-            template = self._fields['message_template'].default
+            template = ""
             
         text = template
         replacements = {

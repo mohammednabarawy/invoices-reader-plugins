@@ -188,7 +188,7 @@ class WhatsAppClient:
                         processed_in_this_loop = True
                         
                         # Apply Sender Filtering
-                        allowed_sender = self.plugin.get_field('allowed_sender')
+                        allowed_sender = self.plugin.get_setting('allowed_sender', "")
                         if allowed_sender and allowed_sender.strip():
                             allowed_sender_clean = allowed_sender.lower().replace(" ", "")
                             header_title = ""
@@ -290,7 +290,7 @@ class WhatsAppClient:
                                 
                             # 4. Auto-reply logic
                             if msg_text or has_downloaded:
-                                bot_val = self.plugin.get_field('bot_mode')
+                                bot_val = self.plugin.get_setting('bot_mode', False, type=bool)
                                 if bot_val:
                                     reply_msg = "I received your message! I am the Invoices Reader AI agent."
                                     if has_downloaded:

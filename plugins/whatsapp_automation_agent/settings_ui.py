@@ -64,6 +64,56 @@ class WhatsAppSettingsWidget(QWidget):
         
         layout.addWidget(self.qr_area)
         
+        from PyQt5.QtWidgets import QCheckBox, QLineEdit, QTextEdit
+        
+        # Configuration Fields
+        self.config_area = QFrame()
+        self.config_area.setStyleSheet("background-color: transparent;")
+        config_layout = QVBoxLayout(self.config_area)
+        config_layout.setContentsMargins(0, 10, 0, 10)
+        
+        self.auto_start_chk = QCheckBox("Auto-start WhatsApp Background Agent")
+        self.auto_start_chk.setChecked(self.plugin.get_setting('auto_start', False, type=bool))
+        self.auto_start_chk.stateChanged.connect(lambda s: self.plugin.set_setting('auto_start', bool(s)))
+        config_layout.addWidget(self.auto_start_chk)
+        
+        self.bot_mode_chk = QCheckBox("Enable AI Bot Auto-reply")
+        self.bot_mode_chk.setChecked(self.plugin.get_setting('bot_mode', False, type=bool))
+        self.bot_mode_chk.stateChanged.connect(lambda s: self.plugin.set_setting('bot_mode', bool(s)))
+        config_layout.addWidget(self.bot_mode_chk)
+        
+        sender_lbl = QLabel("Allowed Sender (Name or Number):")
+        self.allowed_sender_edit = QLineEdit()
+        self.allowed_sender_edit.setPlaceholderText("Leave blank to allow all...")
+        self.allowed_sender_edit.setText(self.plugin.get_setting('allowed_sender', ""))
+        self.allowed_sender_edit.textChanged.connect(lambda t: self.plugin.set_setting('allowed_sender', t))
+        config_layout.addWidget(sender_lbl)
+        config_layout.addWidget(self.allowed_sender_edit)
+        
+        template_lbl = QLabel("Outgoing Message Template (for 'Send WhatsApp' action):")
+        self.template_edit = QTextEdit()
+        self.template_edit.setMaximumHeight(100)
+        default_template = """\U0001F4C4 *Invoice #{invoice_number}*
+\U0001F4C5 *Date:* {date}
+
+\U0001F464 *From:* {vendor_name}
+\U0001F4B3 *VAT ID:* {vat_id}
+
+\U0001F4CB *Items:*
+{line_items}
+
+\U0001F4B0 *Subtotal:* {currency} {subtotal}
+\U0001F4CA *VAT ({vat_rate}%):* {currency} {vat_total}
+\U0001F4B5 *Total:* {currency} {total}
+
+Thanks!"""
+        self.template_edit.setPlainText(self.plugin.get_setting('message_template', default_template))
+        self.template_edit.textChanged.connect(lambda: self.plugin.set_setting('message_template', self.template_edit.toPlainText()))
+        config_layout.addWidget(template_lbl)
+        config_layout.addWidget(self.template_edit)
+        
+        layout.addWidget(self.config_area)
+        
         # Controls
         controls_layout = QHBoxLayout()
         
