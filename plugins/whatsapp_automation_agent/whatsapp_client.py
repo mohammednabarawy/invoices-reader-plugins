@@ -4,6 +4,8 @@ import time
 import asyncio
 import traceback
 import hashlib
+import base64
+import json
 import re
 from urllib.parse import quote
 from collections import deque
@@ -29,6 +31,145 @@ class WhatsAppClient:
         self.session_dir = self.user_data_dir  # alias for settings_ui
         self._recent_reply_keys = deque(maxlen=500)
         self._recent_reply_lookup = set()
+        self._send_lock = asyncio.Lock()
+
+    def _normalize_download_filename(self, filename_hint: str, default_ext: str = ".pdf") -> str:
+        """Sanitize a filename for local filesystem writes."""
+        name = (filename_hint or "").strip().replace("\n", " ")
+        if name:
+            name = os.path.basename(name)
+            name = re.sub(r'[\\/:*?"<>|]+', "_", name)
+
+        if not name:
+            name = f"whatsapp_document_{int(time.time())}{default_ext}"
+        elif "." not in os.path.basename(name):
+            name = f"{name}{default_ext}"
+
+        return name
+
+    async def _download_document_blob_fallback(self, message_element, downloads_dir: str):
+        """Fallback download path: fetch blob URL bytes from the page context and save locally."""
+        blob_url = ""
+        filename_hint = ""
+
+        # 1) Prefer links inside the target message.
+        if message_element is not None:
+            link_candidates = [
+                message_element.locator("a[href^='blob:']").first,
+                message_element.locator("a[href*='blob:']").first,
+            ]
+            for link in link_candidates:
+                try:
+                    if await link.count() == 0:
+                        continue
+                    href = await link.get_attribute("href")
+                    if not href:
+                        continue
+                    blob_url = href
+                    filename_hint = (
+                        (await link.get_attribute("download"))
+                        or (await link.get_attribute("title"))
+                        or ""
+                    )
+                    if not filename_hint:
+                        try:
+                            filename_hint = (await link.inner_text()).strip()
+                        except Exception:
+                            filename_hint = ""
+                    break
+                except Exception:
+                    continue
+
+        # 2) Broader fallback: any visible blob link in main chat area.
+        if not blob_url:
+            global_link_selectors = [
+                "#main a[href^='blob:']",
+                "a[href^='blob:']",
+                "#main a[download]",
+                "a[download]",
+            ]
+            for global_selector in global_link_selectors:
+                try:
+                    global_link = self.page.locator(global_selector).last
+                    if await global_link.count() == 0:
+                        continue
+                    blob_url = await global_link.get_attribute("href") or ""
+                    filename_hint = (
+                        (await global_link.get_attribute("download"))
+                        or (await global_link.get_attribute("title"))
+                        or filename_hint
+                    )
+                    if blob_url:
+                        break
+                except Exception:
+                    continue
+
+        if not blob_url:
+            return None
+
+        try:
+            payload_b64 = await self.page.evaluate(
+                """
+                async ({url}) => {
+                    const response = await fetch(url);
+                    if (!response.ok) return null;
+                    const buffer = await response.arrayBuffer();
+                    const bytes = new Uint8Array(buffer);
+                    const chunk = 0x8000;
+                    let binary = "";
+                    for (let i = 0; i < bytes.length; i += chunk) {
+                        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+                    }
+                    return btoa(binary);
+                }
+                """,
+                {"url": blob_url},
+            )
+            if not payload_b64:
+                return None
+
+            file_name = self._normalize_download_filename(filename_hint or "invoice.pdf", default_ext=".pdf")
+            file_path = os.path.join(downloads_dir, file_name)
+            with open(file_path, "wb") as f:
+                f.write(base64.b64decode(payload_b64))
+            return file_path
+        except Exception as e:
+            logger.warning(f"[WA] Blob extraction fallback failed: {e}")
+            return None
+
+    async def _resolve_incoming_message(self, message_data_id: str = ""):
+        """Return a resilient locator for the current target incoming message."""
+        if not self.page:
+            return None
+
+        if message_data_id:
+            try:
+                selector_value = json.dumps(message_data_id)
+                exact_match = self.page.locator(f"div.message-in[data-id={selector_value}]").last
+                if await exact_match.count() > 0:
+                    return exact_match
+
+                alt_exact = self.page.locator(f"#main div[data-id={selector_value}]").last
+                if await alt_exact.count() > 0:
+                    return alt_exact
+            except Exception:
+                pass
+
+        fallback_selectors = [
+            "#main div.message-in",
+            "div.message-in",
+            "#main div[data-id*='false_']",
+            "div[data-id*='false_']",
+        ]
+        for selector in fallback_selectors:
+            try:
+                fallback_last = self.page.locator(selector).last
+                if await fallback_last.count() > 0:
+                    return fallback_last
+            except Exception:
+                continue
+
+        return None
 
     def _extract_phone_candidate(self, metadata: dict | None = None, key: str = "") -> str:
         """Return best-effort WhatsApp phone candidate for restoring reply context."""
@@ -311,66 +452,340 @@ class WhatsAppClient:
                                 continue
                                 
                         # Get incoming messages from the active chat only.
-                        messages = await self.page.locator("div.message-in").all()
-                        if messages:
-                            last_message = messages[-1]
+                        incoming_messages = self.page.locator("div.message-in")
+                        incoming_count = await incoming_messages.count()
+                        if incoming_count > 0:
+                            last_message = incoming_messages.nth(incoming_count - 1)
+                            message_data_id = (await last_message.get_attribute("data-id")) or ""
+                            message_target = await self._resolve_incoming_message(message_data_id)
+                            if not message_target:
+                                logger.warning("[WA] Incoming message disappeared before processing; skipping this cycle.")
+                                continue
+
                             has_downloaded = False
-                            message_key = await self._get_message_key(last_message, header_title)
+                            message_key = await self._get_message_key(message_target, header_title)
                             
-                            # 1. Check for documents/files with a direct downward arrow download button inside the message
-                            dl_icon_selectors = "span[data-icon='down'], span[data-icon='arrow-down']"
-                            download_btn = last_message.locator(dl_icon_selectors).first
-                            
-                            if await download_btn.count() == 0:
-                                download_btn = last_message.locator("div[role='button'][aria-label='Download'], div[role='button'][aria-label='تنزيل']").first
-                                
-                            if await download_btn.count() > 0 and await download_btn.is_visible():
+                            # 1. Check for documents/files with robust selectors.
+                            # WhatsApp often hides document download buttons until message hover.
+                            try:
+                                await message_target.hover(timeout=1200)
+                            except Exception:
+                                pass
+
+                            document_download_selectors = [
+                                "span[data-icon='down']",
+                                "span[data-icon='arrow-down']",
+                                "span[data-icon='download']",
+                                "span[data-icon='ic-download']",
+                                "div[role='button'][aria-label='Download']",
+                                "div[role='button'][aria-label='تنزيل']",
+                                "button[aria-label='Download']",
+                                "button[aria-label='تنزيل']",
+                            ]
+                            download_btn = None
+                            for selector in document_download_selectors:
+                                candidate = message_target.locator(selector).first
+                                if await candidate.count() > 0:
+                                    download_btn = candidate
+                                    break
+
+                            document_indicators = [
+                                "span[data-icon='document']",
+                                "span[data-icon='doc']",
+                                "div[aria-label*='Document']",
+                                "div[aria-label*='مستند']",
+                                "span:has-text('.pdf')",
+                            ]
+                            is_document_like = False
+                            for selector in document_indicators:
+                                indicator = message_target.locator(selector).first
+                                if await indicator.count() > 0:
+                                    is_document_like = True
+                                    break
+
+                            if download_btn or is_document_like:
                                 logger.info("Found downloadable media attachment.")
-                                await self._reply_once(
-                                    f"{message_key}:downloading",
-                                    "⏳ Downloading invoice..."
-                                )
+                                # Avoid typing a reply before document download. Sending UI actions here can
+                                # trigger list rerenders and make the document bubble disappear from DOM.
+
+                                file_path = None
+                                last_download_error = None
                                 try:
-                                    async with self.page.expect_download(timeout=15000) as download_info:
-                                        await download_btn.click()
-                                    download = await download_info.value
-                                    
-                                    file_path = os.path.join(downloads_dir, download.suggested_filename)
-                                    await download.save_as(file_path)
-                                    logger.info(f"Downloaded media document: {file_path}")
-                                    has_downloaded = True
-                                    
-                                    # Forward to main app via API
-                                    if hasattr(self.plugin.api, 'processing'):
-                                        wa_metadata = {
-                                            'whatsapp_message_key': message_key,
-                                            'whatsapp_chat_title': header_title or "",
-                                            'whatsapp_sender_phone': self._extract_phone_candidate(
-                                                {'whatsapp_chat_title': header_title or ""},
+                                    if download_btn:
+                                        for force_click in (False, True):
+                                            try:
+                                                async with self.page.expect_download(timeout=15000) as download_info:
+                                                    await download_btn.click(timeout=4000, force=force_click)
+                                                download = await download_info.value
+                                                file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                await download.save_as(file_path)
+                                                break
+                                            except Exception as click_error:
+                                                last_download_error = click_error
+                                                mode = "force-click" if force_click else "normal click"
+                                                logger.warning(f"[WA] Direct document download via {mode} failed: {click_error}")
+
+                                    # Fallback: open message menu and click Download for document bubbles.
+                                    if not file_path and is_document_like:
+                                        logger.info("[WA] Trying document download fallback via message menu.")
+                                        menu_openers = [
+                                            "span[data-icon='ic-chevron-down-menu']",
+                                            "span[data-icon='down-context']",
+                                            "div[role='button'][aria-label='Menu']",
+                                            "div[role='button'][aria-label='القائمة']",
+                                        ]
+                                        menu_opened = False
+                                        for opener_selector in menu_openers:
+                                            opener = message_target.locator(opener_selector).first
+                                            if await opener.count() == 0:
+                                                continue
+                                            try:
+                                                await opener.click(timeout=2500)
+                                                menu_opened = True
+                                                break
+                                            except Exception:
+                                                try:
+                                                    await opener.click(timeout=2500, force=True)
+                                                    menu_opened = True
+                                                    break
+                                                except Exception:
+                                                    continue
+
+                                        if menu_opened:
+                                            menu_download_selectors = [
+                                                "div[role='button']:has-text('Download')",
+                                                "div[role='button']:has-text('تنزيل')",
+                                                "li:has-text('Download')",
+                                                "li:has-text('تنزيل')",
+                                            ]
+                                            for menu_selector in menu_download_selectors:
+                                                menu_item = self.page.locator(menu_selector).first
+                                                if await menu_item.count() == 0:
+                                                    continue
+                                                try:
+                                                    async with self.page.expect_download(timeout=15000) as download_info:
+                                                        await menu_item.click(timeout=3000)
+                                                    download = await download_info.value
+                                                    file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                    await download.save_as(file_path)
+                                                    break
+                                                except Exception as menu_error:
+                                                    last_download_error = menu_error
+                                                    logger.warning(f"[WA] Menu download attempt failed via '{menu_selector}': {menu_error}")
+                                                    continue
+
+                                        try:
+                                            await self.page.keyboard.press("Escape")
+                                            await asyncio.sleep(0.2)
+                                        except Exception:
+                                            pass
+
+                                    # Final fallback: open document bubble viewer and click top-bar download.
+                                    if not file_path and is_document_like:
+                                        logger.info("[WA] Trying document download fallback via viewer open.")
+                                        opened_viewer = False
+                                        viewer_targets = [
+                                            message_target.locator("span[data-icon='document']").first,
+                                            message_target.locator("div[aria-label*='Document']").first,
+                                            message_target.locator("div[aria-label*='مستند']").first,
+                                            message_target.locator("div[role='button']").first,
+                                            message_target,
+                                        ]
+                                        for target in viewer_targets:
+                                            try:
+                                                if await target.count() == 0:
+                                                    continue
+                                                await target.click(timeout=3000)
+                                                opened_viewer = True
+                                                break
+                                            except Exception:
+                                                try:
+                                                    await target.click(timeout=3000, force=True)
+                                                    opened_viewer = True
+                                                    break
+                                                except Exception:
+                                                    continue
+
+                                        if opened_viewer:
+                                            await asyncio.sleep(1.2)
+                                            viewer_download_selectors = [
+                                                "div[role='button'][aria-label='Download']",
+                                                "div[role='button'][aria-label='تنزيل']",
+                                                "span[data-icon='download']",
+                                                "span[data-icon='ic-download']",
+                                                "button[title='Download']",
+                                                "div[title='Download']",
+                                                "div[title='تنزيل']",
+                                            ]
+                                            for selector in viewer_download_selectors:
+                                                viewer_btn = self.page.locator(selector).first
+                                                if await viewer_btn.count() == 0:
+                                                    continue
+                                                try:
+                                                    async with self.page.expect_download(timeout=15000) as download_info:
+                                                        await viewer_btn.click(timeout=3000)
+                                                    download = await download_info.value
+                                                    file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                    await download.save_as(file_path)
+                                                    break
+                                                except Exception as viewer_error:
+                                                    last_download_error = viewer_error
+                                                    logger.warning(f"[WA] Viewer download attempt failed via '{selector}': {viewer_error}")
+                                                    continue
+
+                                        try:
+                                            await self.page.keyboard.press("Escape")
+                                            await asyncio.sleep(0.2)
+                                        except Exception:
+                                            pass
+
+                                    # Additional fallback: some builds trigger download by clicking document bubble itself.
+                                    if not file_path and is_document_like:
+                                        logger.info("[WA] Trying direct document bubble download fallback.")
+                                        for force_click in (False, True):
+                                            try:
+                                                live_target = await self._resolve_incoming_message(message_data_id)
+                                                if not live_target:
+                                                    try:
+                                                        await self.page.keyboard.press("Escape")
+                                                        await asyncio.sleep(0.15)
+                                                    except Exception:
+                                                        pass
+                                                    await self._restore_reply_context(
+                                                        {"whatsapp_chat_title": header_title or ""},
+                                                        message_key
+                                                    )
+                                                    live_target = await self._resolve_incoming_message(message_data_id)
+                                                if not live_target:
+                                                    live_target = await self._resolve_incoming_message("")
+                                                if not live_target:
+                                                    raise RuntimeError("Incoming message target is no longer available")
+                                                async with self.page.expect_download(timeout=12000) as download_info:
+                                                    await live_target.click(timeout=3000, force=force_click)
+                                                download = await download_info.value
+                                                file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                await download.save_as(file_path)
+                                                break
+                                            except Exception as bubble_error:
+                                                last_download_error = bubble_error
+                                                mode = "force-click" if force_click else "normal click"
+                                                logger.warning(f"[WA] Direct bubble download via {mode} failed: {bubble_error}")
+
+                                    # Event-based fallback: capture any download regardless of exact trigger selector.
+                                    if not file_path and is_document_like:
+                                        logger.info("[WA] Trying event-based download fallback.")
+                                        download_state = {"download": None}
+
+                                        def _on_download(download):
+                                            if download_state["download"] is None:
+                                                download_state["download"] = download
+
+                                        try:
+                                            self.page.on("download", _on_download)
+                                        except Exception:
+                                            _on_download = None
+
+                                        trigger_selectors = [
+                                            "div[role='button'][aria-label='Download']",
+                                            "div[role='button'][aria-label='تنزيل']",
+                                            "span[data-icon='download']",
+                                            "span[data-icon='ic-download']",
+                                            "#main a[download]",
+                                            "a[download]",
+                                        ]
+
+                                        for trigger_selector in trigger_selectors:
+                                            if file_path:
+                                                break
+                                            try:
+                                                trigger = self.page.locator(trigger_selector).first
+                                                if await trigger.count() == 0:
+                                                    continue
+                                                await trigger.click(timeout=2500, force=True)
+                                            except Exception as trigger_error:
+                                                last_download_error = trigger_error
+                                                continue
+
+                                            for _ in range(15):
+                                                if download_state["download"] is not None:
+                                                    break
+                                                await asyncio.sleep(0.2)
+
+                                            if download_state["download"] is not None:
+                                                try:
+                                                    download = download_state["download"]
+                                                    file_path = os.path.join(downloads_dir, download.suggested_filename)
+                                                    await download.save_as(file_path)
+                                                    break
+                                                except Exception as save_error:
+                                                    last_download_error = save_error
+                                                    file_path = None
+                                                    continue
+
+                                        if _on_download is not None:
+                                            try:
+                                                self.page.remove_listener("download", _on_download)
+                                            except Exception:
+                                                pass
+
+                                    # Last-resort fallback: pull blob bytes directly from the DOM/page.
+                                    if not file_path and is_document_like:
+                                        logger.info("[WA] Trying document download fallback via blob extraction.")
+                                        live_target = await self._resolve_incoming_message(message_data_id)
+                                        if live_target:
+                                            message_target = live_target
+                                        elif message_target is None:
+                                            await self._restore_reply_context(
+                                                {"whatsapp_chat_title": header_title or ""},
                                                 message_key
                                             )
-                                        }
-                                        enqueued = self.plugin.api.processing.import_file_to_queue(
-                                            file_path,
-                                            "WhatsApp",
-                                            metadata=wa_metadata
+                                            message_target = await self._resolve_incoming_message("")
+                                        file_path = await self._download_document_blob_fallback(
+                                            message_target,
+                                            downloads_dir
                                         )
-                                        if enqueued:
-                                            await self._reply_once(
-                                                f"{message_key}:queued",
-                                                "📥 Received. Added to processing queue."
+
+                                    if file_path:
+                                        logger.info(f"Downloaded media document: {file_path}")
+                                        has_downloaded = True
+
+                                        # Forward to main app via API
+                                        if hasattr(self.plugin.api, 'processing'):
+                                            wa_metadata = {
+                                                'whatsapp_message_key': message_key,
+                                                'whatsapp_chat_title': header_title or "",
+                                                'whatsapp_sender_phone': self._extract_phone_candidate(
+                                                    {'whatsapp_chat_title': header_title or ""},
+                                                    message_key
+                                                )
+                                            }
+                                            enqueued = self.plugin.api.processing.import_file_to_queue(
+                                                file_path,
+                                                "WhatsApp",
+                                                metadata=wa_metadata
                                             )
+                                            if enqueued:
+                                                await self._reply_once(
+                                                    f"{message_key}:queued",
+                                                    "📥 Invoice received and added to processing queue."
+                                                )
+                                            else:
+                                                await self._reply_once(
+                                                    f"{message_key}:queue_failed",
+                                                    "❌ Failed to add invoice to queue."
+                                                )
                                         else:
                                             await self._reply_once(
                                                 f"{message_key}:queue_failed",
                                                 "❌ Failed to add invoice to queue."
                                             )
                                     else:
+                                        if last_download_error:
+                                            logger.warning(f"[WA] Document download failed after all fallbacks: {last_download_error}")
                                         await self._reply_once(
-                                            f"{message_key}:queue_failed",
-                                            "❌ Failed to add invoice to queue."
+                                            f"{message_key}:download_failed",
+                                            "❌ Download failed."
                                         )
-                                        
                                 except Exception as e:
                                     logger.error(f"Error downloading media document: {e}")
                                     await self._reply_once(
@@ -380,7 +795,7 @@ class WhatsAppClient:
 
                             # 2. Check for displayed images (WhatsApp strips direct download buttons from displayed images)
                             if not has_downloaded:
-                                img_element = last_message.locator("img[src^='blob:']").first
+                                img_element = message_target.locator("img[src^='blob:']").first
                                 if await img_element.count() > 0 and await img_element.is_visible():
                                     logger.info("Found image message.")
                                     await self._reply_once(
@@ -477,7 +892,7 @@ class WhatsAppClient:
                                                     if enqueued:
                                                         await self._reply_once(
                                                             f"{message_key}:queued",
-                                                            "📥 Received. Added to processing queue."
+                                                            "📥 Invoice received and added to processing queue."
                                                         )
                                                     else:
                                                         await self._reply_once(
@@ -522,7 +937,7 @@ class WhatsAppClient:
                                         await self.page.keyboard.press("Escape")
 
                             # 3. Read any text attached
-                            text_element = last_message.locator("span.selectable-text")
+                            text_element = message_target.locator("span.selectable-text")
                             msg_text = ""
                             if await text_element.count() > 0:
                                 msg_text = await text_element.first.inner_text()
@@ -735,21 +1150,31 @@ class WhatsAppClient:
         safe_metadata = metadata or {}
 
         async def _send_notice():
-            vendor = (existing_data or {}).get('vendor_name') or "Unknown"
-            inv_num = (existing_data or {}).get('invoice_number') or "N/A"
-            inv_date = (existing_data or {}).get('date') or "N/A"
-            total = (existing_data or {}).get('invoice_total')
-            currency = (existing_data or {}).get('currency') or ""
-            amount_str = f"{total} {currency}".strip() if total else "N/A"
+            def _clean(val, fallback="N/A"):
+                if val is None:
+                    return fallback
+                text = str(val).strip()
+                if not text or text.lower() in {"none", "null", "nan"}:
+                    return fallback
+                if text in {"0", "0.0"}:
+                    return fallback
+                return text
 
-            duplicate_msg = (
-                "⚠️ Duplicate invoice detected.\n"
-                f"Vendor: {vendor}\n"
-                f"Invoice #: {inv_num}\n"
-                f"Date: {inv_date}\n"
-                f"Total: {amount_str}\n"
-                "No new action was taken."
-            )
+            vendor = _clean((existing_data or {}).get('vendor_name'), "Unknown")
+            inv_num = _clean((existing_data or {}).get('invoice_number'))
+            inv_date = _clean((existing_data or {}).get('date'))
+            total = (existing_data or {}).get('invoice_total')
+            currency = _clean((existing_data or {}).get('currency'), "")
+            amount_str = f"{total} {currency}".strip() if total not in (None, "") else "N/A"
+
+            duplicate_msg = "\n".join([
+                "⚠️ Duplicate invoice detected",
+                f"🏢 Vendor: {vendor}",
+                f"🧾 Invoice #: {inv_num}",
+                f"📅 Date: {inv_date}",
+                f"💰 Total: {amount_str}",
+                "No new action was taken.",
+            ])
 
             message_key = safe_metadata.get('whatsapp_message_key') or "wa_duplicate"
             logger.info(
@@ -771,15 +1196,25 @@ class WhatsAppClient:
         safe_data = data or {}
 
         async def _send_notice():
-            vendor = safe_data.get('vendor_name') or "Unknown"
-            inv_num = safe_data.get('invoice_number') or "N/A"
-            inv_date = safe_data.get('date') or "N/A"
+            def _clean(val, fallback="N/A"):
+                if val is None:
+                    return fallback
+                text = str(val).strip()
+                if not text or text.lower() in {"none", "null", "nan"}:
+                    return fallback
+                if text in {"0", "0.0"}:
+                    return fallback
+                return text
+
+            vendor = _clean(safe_data.get('vendor_name'), "Unknown")
+            inv_num = _clean(safe_data.get('invoice_number'))
+            inv_date = _clean(safe_data.get('date'))
             total = safe_data.get('invoice_total')
-            currency = safe_data.get('currency') or ""
-            phase = safe_data.get('einvoice_phase') or safe_data.get('qr_phase') or ""
+            currency = _clean(safe_data.get('currency'), "")
+            phase = _clean(safe_data.get('einvoice_phase') or safe_data.get('qr_phase'), "")
             compatible = safe_data.get('einvoice_compatible')
 
-            amount_str = f"{total} {currency}".strip() if total else "N/A"
+            amount_str = f"{total} {currency}".strip() if total not in (None, "") else "N/A"
             if compatible is True or compatible == 1:
                 zatca = "Compliant"
             elif compatible is False or compatible == 0:
@@ -788,15 +1223,15 @@ class WhatsAppClient:
                 zatca = "Unknown"
 
             lines = [
-                "✅ Invoice processed successfully.",
-                f"Vendor: {vendor}",
-                f"Invoice #: {inv_num}",
-                f"Date: {inv_date}",
-                f"Total: {amount_str}",
+                "✅ Invoice processed successfully",
+                f"🏢 Vendor: {vendor}",
+                f"🧾 Invoice #: {inv_num}",
+                f"📅 Date: {inv_date}",
+                f"💰 Total: {amount_str}",
             ]
             if phase:
-                lines.append(f"ZATCA Phase: {phase}")
-            lines.append(f"ZATCA: {zatca}")
+                lines.append(f"🧾 ZATCA Phase: {phase}")
+            lines.append(f"🧪 ZATCA: {zatca}")
 
             message_key = safe_metadata.get('whatsapp_message_key') or "wa_processed"
             logger.info(
@@ -820,7 +1255,7 @@ class WhatsAppClient:
         async def _send_notice():
             message_key = safe_metadata.get('whatsapp_message_key') or "wa_failed"
             reply_text = (
-                "❌ Failed to process your invoice.\n"
+                "❌ Failed to process invoice.\n"
                 f"Error: {safe_error}"
             )
             logger.info(f"[WA] Sending processing failed notice (message_key={message_key})")
@@ -866,28 +1301,43 @@ class WhatsAppClient:
     async def auto_reply(self, text: str, metadata: dict | None = None, reply_key: str = "") -> bool:
         """Types and sends a message in the currently open chat."""
         try:
-            input_box = await self._find_chat_input()
-            if not input_box:
-                # If overlay blocks input (e.g., media viewer), close it and retry once.
-                await self.page.keyboard.press("Escape")
-                await asyncio.sleep(0.2)
-                input_box = await self._find_chat_input()
-
-            if not input_box:
-                restored = await self._restore_reply_context(metadata, reply_key)
-                if restored:
-                    input_box = await self._find_chat_input()
-
-            if not input_box:
+            normalized_text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            if not normalized_text:
                 return False
 
-            await input_box.click(timeout=2000)
-            await self.page.keyboard.press("ControlOrMeta+A")
-            await self.page.keyboard.press("Backspace")
-            await self.page.keyboard.type(text)
-            await self.page.keyboard.press("Enter")
-            logger.info("Sent auto-reply.")
-            return True
+            async with self._send_lock:
+                input_box = await self._find_chat_input()
+                if not input_box:
+                    # If overlay blocks input (e.g., media viewer), close it and retry once.
+                    await self.page.keyboard.press("Escape")
+                    await asyncio.sleep(0.2)
+                    input_box = await self._find_chat_input()
+
+                if not input_box:
+                    restored = await self._restore_reply_context(metadata, reply_key)
+                    if restored:
+                        input_box = await self._find_chat_input()
+
+                if not input_box:
+                    return False
+
+                await input_box.click(timeout=2000)
+                await self.page.keyboard.press("ControlOrMeta+A")
+                await self.page.keyboard.press("Backspace")
+
+                # Insert multiline text safely: Shift+Enter adds line breaks without sending.
+                lines = normalized_text.split("\n")
+                for idx, line in enumerate(lines):
+                    if line:
+                        await self.page.keyboard.insert_text(line)
+                    if idx < len(lines) - 1:
+                        await self.page.keyboard.down("Shift")
+                        await self.page.keyboard.press("Enter")
+                        await self.page.keyboard.up("Shift")
+
+                await self.page.keyboard.press("Enter")
+                logger.info("Sent auto-reply.")
+                return True
         except Exception as e:
             logger.error(f"Failed to auto-reply: {e}")
             return False
