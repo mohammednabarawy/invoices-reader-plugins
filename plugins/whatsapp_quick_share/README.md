@@ -1,14 +1,15 @@
 # WhatsApp Quick Share Plugin
 
-This plugin allows you to quickly share invoice summaries via WhatsApp and copy the invoice image to your clipboard.
+Quickly share the current invoice via WhatsApp Web and copy the invoice image to clipboard.
 
 ## Features
-- **WhatsApp Integration**: Opens a WhatsApp Web chat with a pre-filled summary of the invoice (Vendor, Total, Date).
-- **Clipboard Utility**: Instantly copies the invoice image to your clipboard for pasting into emails or chat apps.
+- **Pre-filled WhatsApp Message**: Opens WhatsApp Web with vendor/amount/date summary.
+- **Clipboard Utility**: Copies current invoice image for instant paste in chat/email.
+- **Toolbar Action**: Single-click access from the main toolbar.
 
 ## Usage
-1.  Open an invoice in Invoices Reader.
-2.  Click the **WhatsApp** icon in the toolbar.
-3.  The app will:
-    - Copy the invoice image to your clipboard.
-    - Open your default browser to `web.whatsapp.com` with the message pre-filled.
+1. Open an invoice in Invoices Reader.
+2. Click the **WhatsApp** toolbar action.
+3. The plugin will:
+   - copy the invoice image to clipboard,
+   - open `web.whatsapp.com` with a pre-filled message.

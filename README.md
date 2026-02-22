@@ -1,39 +1,43 @@
 # Invoices Reader Community Plugins
 
-Welcome to the official community plugin repository for **Invoices Reader**. This repository hosts plugins created by the community to extend the functionality of the application.
+Official community plugin repository for **Invoices Reader**.
 
-## 📂 Repository Structure
+## Repository Structure
 
-- `plugins/`: Contains all community plugins. Each folder is a separate plugin.
-- `templates/`: Starter templates for creating new plugins.
-- `scripts/`: Utility scripts for validation and maintenance.
+- `plugins/`: All community plugins (one folder per plugin ID).
+- `templates/`: Starter templates for new plugins.
+- `docs/`: Developer documentation for plugin APIs and best practices.
+- `scripts/`: Validation and maintenance utilities.
 
-## 🚀 How to Use
+## Included Plugins (Current)
+
+- `whatsapp_quick_share`: Quick share action to open WhatsApp with a pre-filled invoice summary and copy invoice image to clipboard.
+- `whatsapp_automation_agent`: Background WhatsApp agent for inbound/outbound invoice flow, including incoming file intake (images/documents) and receive acknowledgements.
+
+## How To Use
 
 ### For Users
-1.  Download or `git clone` this repository:
-    ```bash
-    git clone https://github.com/mohammednabarawy/invoices-reader-plugins.git
-    ```
-2.  Copy the folder of the desired plugin from `plugins/` to your local Invoices Reader `plugins` directory.
-3.  Restart the application.
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/mohammednabarawy/invoices-reader-plugins.git
+   ```
+2. Copy the desired plugin folder from `plugins/` to your local Invoices Reader `plugins/` directory.
+3. Restart Invoices Reader.
 
 ### For Developers
-1.  **Fork** this repository.
-2.  Create a new folder in `plugins/` with your plugin ID (e.g., `plugins/my-awesome-plugin`).
-3.  Add a `manifest.json` file (see `templates/basic_plugin/manifest.json`).
-4.  Develop your plugin.
-5.  Submit a **Pull Request**.
 
-## 📚 Documentation
+1. Fork this repository.
+2. Create a new plugin folder in `plugins/` (for example `plugins/my-awesome-plugin`).
+3. Add `manifest.json` (see `templates/basic_plugin/manifest.json`).
+4. Implement your plugin.
+5. Submit a pull request.
 
-- [Plugin Developer Manual](docs/plugin_developer_manual.md) - **Start here!** Crucial guide for building plugins.
-- [Contribution Guidelines](CONTRIBUTING.md) - How to submit your work.
+## Documentation
 
-## 🤝 Contributing
+- [Plugin Developer Manual](docs/plugin_developer_manual.md)
+- [Contribution Guidelines](CONTRIBUTING.md)
 
-We welcome contributions! Please read our [Contribution Guidelines](CONTRIBUTING.md) for details on how to submit your plugin.
+## License
 
-## 📜 License
-
-Plugins in this repository are open-source and typically licensed under MIT, but check each plugin's `LICENSE` file for specifics.
+Each plugin defines its own license. Check plugin-level `LICENSE` files where provided.

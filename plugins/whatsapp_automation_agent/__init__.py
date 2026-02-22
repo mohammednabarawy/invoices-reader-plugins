@@ -53,6 +53,33 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
         if auto_start_val:
             self.start_agent()
 
+    def on_source_processing_event(self, source, status, metadata, payload):
+        """Generic plugin callback for source-processing events."""
+        if str(source).lower() != 'whatsapp':
+            return
+
+        if not self.wa_client or not self.wa_client.is_running:
+            return
+
+        normalized_status = str(status or "").lower()
+        safe_metadata = metadata or {}
+
+        if normalized_status == 'duplicate':
+            self.wa_client.notify_duplicate(payload or {}, safe_metadata)
+            return
+
+        if normalized_status == 'completed':
+            self.wa_client.notify_processing_result(payload or {}, safe_metadata)
+            return
+
+        if normalized_status == 'failed':
+            if isinstance(payload, dict):
+                error_text = payload.get('error', 'Unknown processing error')
+            else:
+                error_text = str(payload) if payload else 'Unknown processing error'
+            self.wa_client.notify_processing_failed(error_text, safe_metadata)
+            return
+
     @Action(label="Start WhatsApp Agent", location="settings", icon="fa5b.whatsapp")
     def start_agent(self, *args):
         """Start the Playwright agent in the background."""

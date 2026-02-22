@@ -4,6 +4,8 @@ import time
 import asyncio
 import traceback
 import hashlib
+import re
+from urllib.parse import quote
 from collections import deque
 from playwright.async_api import async_playwright
 from core.plugins.sdk import get_logger
@@ -27,6 +29,48 @@ class WhatsAppClient:
         self.session_dir = self.user_data_dir  # alias for settings_ui
         self._recent_reply_keys = deque(maxlen=500)
         self._recent_reply_lookup = set()
+
+    def _extract_phone_candidate(self, metadata: dict | None = None, key: str = "") -> str:
+        """Return best-effort WhatsApp phone candidate for restoring reply context."""
+        safe_metadata = metadata or {}
+
+        direct_phone = str(safe_metadata.get("whatsapp_sender_phone") or "").strip()
+        if direct_phone:
+            digits = re.sub(r"\D", "", direct_phone)
+            if 9 <= len(digits) <= 15:
+                return digits
+
+        chat_title = str(safe_metadata.get("whatsapp_chat_title") or "")
+        if chat_title:
+            for match in re.findall(r"\d{9,15}", chat_title):
+                return match
+
+        key_text = str(key or "")
+        if key_text:
+            for match in re.findall(r"\d{9,15}", key_text):
+                return match
+
+        return ""
+
+    async def _restore_reply_context(self, metadata: dict | None = None, key: str = "") -> bool:
+        """Try to restore a reply-ready chat view when composer is temporarily unavailable."""
+        if not self.page:
+            return False
+
+        phone = self._extract_phone_candidate(metadata, key)
+        if not phone:
+            return False
+
+        try:
+            url = f"https://web.whatsapp.com/send/?phone={quote(phone)}&text=&type=phone_number&app_absent=0"
+            await self.page.goto(url, timeout=20000)
+            await self.page.wait_for_selector("#main", state="visible", timeout=20000)
+            await asyncio.sleep(0.4)
+            logger.info(f"[WA] Restored reply context using phone hint: {phone}")
+            return True
+        except Exception as e:
+            logger.warning(f"[WA] Failed to restore reply context for phone {phone}: {e}")
+            return False
 
     def run(self):
         """Entry point for the background thread."""
@@ -180,9 +224,9 @@ class WhatsAppClient:
                         processed_in_this_loop = True
                         
                         # Apply Sender Filtering
+                        header_title = ""
                         allowed_sender = self.plugin.get_setting('allowed_sender', "")
                         if allowed_sender and allowed_sender.strip():
-                            header_title = ""
                             try:
                                 # Look for chat title in the open chat header
                                 header_element = self.page.locator("#main header").first
@@ -266,7 +310,7 @@ class WhatsAppClient:
                                 logger.info(f"Skipping messages: chat '{header_title}' doesn't match allowed sender '{allowed_sender}'")
                                 continue
                                 
-                        # Get the last message in the list
+                        # Get incoming messages from the active chat only.
                         messages = await self.page.locator("div.message-in").all()
                         if messages:
                             last_message = messages[-1]
@@ -298,7 +342,19 @@ class WhatsAppClient:
                                     
                                     # Forward to main app via API
                                     if hasattr(self.plugin.api, 'processing'):
-                                        enqueued = self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        wa_metadata = {
+                                            'whatsapp_message_key': message_key,
+                                            'whatsapp_chat_title': header_title or "",
+                                            'whatsapp_sender_phone': self._extract_phone_candidate(
+                                                {'whatsapp_chat_title': header_title or ""},
+                                                message_key
+                                            )
+                                        }
+                                        enqueued = self.plugin.api.processing.import_file_to_queue(
+                                            file_path,
+                                            "WhatsApp",
+                                            metadata=wa_metadata
+                                        )
                                         if enqueued:
                                             await self._reply_once(
                                                 f"{message_key}:queued",
@@ -332,9 +388,39 @@ class WhatsAppClient:
                                         "⏳ Downloading invoice..."
                                     )
                                     try:
-                                        # Click image to open the media viewer
-                                        await img_element.click()
-                                        await asyncio.sleep(2) # Give it 2 seconds to fully load the viewer overlay
+                                        # Click image to open the media viewer.
+                                        # WhatsApp DOM is dynamic; image nodes can detach between locate and click.
+                                        opened_viewer = False
+                                        click_targets = [
+                                            img_element,
+                                            self.page.locator("#main div.message-in img[src^='blob:']").last
+                                        ]
+                                        for idx, target in enumerate(click_targets, start=1):
+                                            try:
+                                                if await target.count() == 0:
+                                                    continue
+                                                try:
+                                                    await target.scroll_into_view_if_needed()
+                                                except Exception:
+                                                    pass
+
+                                                try:
+                                                    await target.click(timeout=4000)
+                                                except Exception as click_error:
+                                                    logger.warning(
+                                                        f"[WA] Image click attempt {idx} failed, retrying force-click: {click_error}"
+                                                    )
+                                                    await target.click(timeout=4000, force=True)
+
+                                                opened_viewer = True
+                                                break
+                                            except Exception as e:
+                                                logger.warning(f"[WA] Image click attempt {idx} failed: {e}")
+
+                                        if not opened_viewer:
+                                            raise RuntimeError("Could not open image viewer from incoming message")
+
+                                        await asyncio.sleep(1.5)  # Allow viewer overlay to settle.
                                         
                                         # Locate the download button in the viewer using multiple robust strategies
                                         btn_selectors = [
@@ -366,9 +452,28 @@ class WhatsAppClient:
                                                 logger.info(f"Downloaded image: {file_path}")
                                                 has_downloaded = True
                                                 
+                                                # Close viewer before sending acknowledgements.
+                                                try:
+                                                    await self.page.keyboard.press("Escape")
+                                                    await asyncio.sleep(0.3)
+                                                except Exception:
+                                                    pass
+
                                                 # Queue for processing
                                                 if hasattr(self.plugin.api, 'processing'):
-                                                    enqueued = self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                                    wa_metadata = {
+                                                        'whatsapp_message_key': message_key,
+                                                        'whatsapp_chat_title': header_title or "",
+                                                        'whatsapp_sender_phone': self._extract_phone_candidate(
+                                                            {'whatsapp_chat_title': header_title or ""},
+                                                            message_key
+                                                        )
+                                                    }
+                                                    enqueued = self.plugin.api.processing.import_file_to_queue(
+                                                        file_path,
+                                                        "WhatsApp",
+                                                        metadata=wa_metadata
+                                                    )
                                                     if enqueued:
                                                         await self._reply_once(
                                                             f"{message_key}:queued",
@@ -404,7 +509,7 @@ class WhatsAppClient:
                                             except:
                                                 pass
                                             
-                                        # Close viewer
+                                        # Ensure viewer is closed.
                                         await self.page.keyboard.press("Escape")
                                         await asyncio.sleep(0.5)
                                     except Exception as e:
@@ -579,28 +684,213 @@ class WhatsAppClient:
         self._recent_reply_keys.append(key)
         self._recent_reply_lookup.add(key)
 
-    async def _reply_once(self, key: str, text: str):
+    async def _reply_once(self, key: str, text: str, metadata: dict | None = None):
         """Send a reply once per key within the current agent session."""
         if key in self._recent_reply_lookup:
             return
 
+        async def _attempt_send(max_attempts: int, delay_seconds: float) -> bool:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    sent = await self.auto_reply(text, metadata=metadata, reply_key=key)
+                    if sent:
+                        return True
+                except Exception as send_error:
+                    logger.warning(f"Auto-reply attempt {attempt}/{max_attempts} failed for key '{key}': {send_error}")
+                if attempt < max_attempts:
+                    await asyncio.sleep(delay_seconds)
+            return False
+
         try:
-            await self.auto_reply(text)
-            self._mark_reply_key(key)
+            # Immediate retries handle transient UI states (media overlay, focus changes).
+            sent = await _attempt_send(max_attempts=4, delay_seconds=0.35)
+            if sent:
+                self._mark_reply_key(key)
+                return
+
+            # One deferred retry window for late async completions (e.g. processing result).
+            logger.warning(
+                f"Auto-reply postponed for key '{key}': chat input not available after immediate retries."
+            )
+
+            async def _deferred_retry():
+                await asyncio.sleep(2.0)
+                if key in self._recent_reply_lookup:
+                    return
+                deferred_sent = await _attempt_send(max_attempts=3, delay_seconds=0.5)
+                if deferred_sent:
+                    self._mark_reply_key(key)
+                else:
+                    logger.warning(f"Auto-reply skipped for key '{key}': chat input not available.")
+
+            asyncio.create_task(_deferred_retry())
         except Exception as e:
             logger.error(f"Failed to send deduplicated auto-reply: {e}")
-            
-    async def auto_reply(self, text: str):
+
+    def notify_duplicate(self, existing_data: dict, metadata: dict | None = None):
+        """Schedule duplicate-notification reply to the active WhatsApp chat."""
+        if not self.is_running or not self.loop or not self.loop.is_running():
+            return
+
+        safe_metadata = metadata or {}
+
+        async def _send_notice():
+            vendor = (existing_data or {}).get('vendor_name') or "Unknown"
+            inv_num = (existing_data or {}).get('invoice_number') or "N/A"
+            inv_date = (existing_data or {}).get('date') or "N/A"
+            total = (existing_data or {}).get('invoice_total')
+            currency = (existing_data or {}).get('currency') or ""
+            amount_str = f"{total} {currency}".strip() if total else "N/A"
+
+            duplicate_msg = (
+                "⚠️ Duplicate invoice detected.\n"
+                f"Vendor: {vendor}\n"
+                f"Invoice #: {inv_num}\n"
+                f"Date: {inv_date}\n"
+                f"Total: {amount_str}\n"
+                "No new action was taken."
+            )
+
+            message_key = safe_metadata.get('whatsapp_message_key') or "wa_duplicate"
+            logger.info(
+                f"[WA] Sending duplicate notice (message_key={message_key}, invoice={inv_num}, vendor={vendor})"
+            )
+            await self._reply_once(f"{message_key}:duplicate", duplicate_msg, safe_metadata)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send_notice(), self.loop)
+        except Exception as e:
+            logger.error(f"Failed to schedule duplicate WhatsApp notice: {e}")
+
+    def notify_processing_result(self, data: dict, metadata: dict | None = None):
+        """Send a completion reply with extracted invoice details."""
+        if not self.is_running or not self.loop or not self.loop.is_running():
+            return
+
+        safe_metadata = metadata or {}
+        safe_data = data or {}
+
+        async def _send_notice():
+            vendor = safe_data.get('vendor_name') or "Unknown"
+            inv_num = safe_data.get('invoice_number') or "N/A"
+            inv_date = safe_data.get('date') or "N/A"
+            total = safe_data.get('invoice_total')
+            currency = safe_data.get('currency') or ""
+            phase = safe_data.get('einvoice_phase') or safe_data.get('qr_phase') or ""
+            compatible = safe_data.get('einvoice_compatible')
+
+            amount_str = f"{total} {currency}".strip() if total else "N/A"
+            if compatible is True or compatible == 1:
+                zatca = "Compliant"
+            elif compatible is False or compatible == 0:
+                zatca = "Not compliant"
+            else:
+                zatca = "Unknown"
+
+            lines = [
+                "✅ Invoice processed successfully.",
+                f"Vendor: {vendor}",
+                f"Invoice #: {inv_num}",
+                f"Date: {inv_date}",
+                f"Total: {amount_str}",
+            ]
+            if phase:
+                lines.append(f"ZATCA Phase: {phase}")
+            lines.append(f"ZATCA: {zatca}")
+
+            message_key = safe_metadata.get('whatsapp_message_key') or "wa_processed"
+            logger.info(
+                f"[WA] Sending processing result notice (message_key={message_key}, invoice={inv_num}, vendor={vendor})"
+            )
+            await self._reply_once(f"{message_key}:processed", "\n".join(lines), safe_metadata)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send_notice(), self.loop)
+        except Exception as e:
+            logger.error(f"Failed to schedule processing result notice: {e}")
+
+    def notify_processing_failed(self, error: str, metadata: dict | None = None):
+        """Send a processing-failed reply."""
+        if not self.is_running or not self.loop or not self.loop.is_running():
+            return
+
+        safe_metadata = metadata or {}
+        safe_error = str(error) if error else "Unknown processing error"
+
+        async def _send_notice():
+            message_key = safe_metadata.get('whatsapp_message_key') or "wa_failed"
+            reply_text = (
+                "❌ Failed to process your invoice.\n"
+                f"Error: {safe_error}"
+            )
+            logger.info(f"[WA] Sending processing failed notice (message_key={message_key})")
+            await self._reply_once(f"{message_key}:failed", reply_text, safe_metadata)
+
+        try:
+            asyncio.run_coroutine_threadsafe(_send_notice(), self.loop)
+        except Exception as e:
+            logger.error(f"Failed to schedule processing failed notice: {e}")
+
+    async def _find_chat_input(self):
+        """Find the visible chat composer element in the currently open chat."""
+        selectors = [
+            "#main footer div[contenteditable='true'][role='textbox']",
+            "#main footer div[contenteditable='true']",
+            "footer div[contenteditable='true'][role='textbox']",
+            "footer div[contenteditable='true']",
+            "div[contenteditable='true'][data-tab='10']",
+            "div[contenteditable='true'][data-tab='6']",
+            "div[title='Type a message']",
+            "div[title='اكتب رسالة']",
+        ]
+
+        # Pass 1: prefer visible candidates.
+        for selector in selectors:
+            candidate = self.page.locator(selector).first
+            try:
+                if await candidate.count() > 0 and await candidate.is_visible():
+                    return candidate
+            except Exception:
+                continue
+
+        # Pass 2: fallback to existing nodes even if visibility probe is unstable.
+        for selector in selectors:
+            candidate = self.page.locator(selector).first
+            try:
+                if await candidate.count() > 0:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    async def auto_reply(self, text: str, metadata: dict | None = None, reply_key: str = "") -> bool:
         """Types and sends a message in the currently open chat."""
         try:
-            # Find the message input box - support English and Arabic titles
-            input_box = self.page.locator("div[title='Type a message'], div[title='اكتب رسالة']")
-            if await input_box.count() > 0:
-                await input_box.fill(text)
-                await self.page.keyboard.press("Enter")
-                logger.info("Sent auto-reply.")
+            input_box = await self._find_chat_input()
+            if not input_box:
+                # If overlay blocks input (e.g., media viewer), close it and retry once.
+                await self.page.keyboard.press("Escape")
+                await asyncio.sleep(0.2)
+                input_box = await self._find_chat_input()
+
+            if not input_box:
+                restored = await self._restore_reply_context(metadata, reply_key)
+                if restored:
+                    input_box = await self._find_chat_input()
+
+            if not input_box:
+                return False
+
+            await input_box.click(timeout=2000)
+            await self.page.keyboard.press("ControlOrMeta+A")
+            await self.page.keyboard.press("Backspace")
+            await self.page.keyboard.type(text)
+            await self.page.keyboard.press("Enter")
+            logger.info("Sent auto-reply.")
+            return True
         except Exception as e:
             logger.error(f"Failed to auto-reply: {e}")
+            return False
 
     async def send_invoice_async(self, phone: str, text: str, file_path: str = None) -> tuple[bool, str]:
         """Sends a message and optional file to a specific phone number."""
@@ -612,7 +902,6 @@ class WhatsAppClient:
             if file_path:
                 logger.info(f"File exists: {os.path.exists(file_path)} (Path: {os.path.abspath(file_path)})")
 
-            from urllib.parse import quote
             safe_text = quote(text)
             url = f"https://web.whatsapp.com/send/?phone={phone}&text={safe_text}&type=phone_number&app_absent=0"
             await self.page.goto(url)

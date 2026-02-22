@@ -11,7 +11,7 @@
 
 **Invoices Reader** is a PyQt5 desktop application for OCR-based invoice processing:
 
-- **AI Extraction**: Uses Gemini, OpenRouter, Ollama, or LMStudio to extract invoice data
+- **AI Extraction**: Uses Gemini, OpenRouter, Ollama, LM Studio, and OpenAI-compatible providers to extract invoice data
 - **Database**: SQLite (`detections.db`) stores invoices, line items, vendors, batches
 - **Queue System**: Global processing queue for async operations
 - **Plugin System**: Declarative architecture for safe extensions
@@ -382,14 +382,65 @@ class MyPlugin(DeclarativePlugin):
 
 **Available Hooks:**
 
-| Hook                | Arguments                    | Description                     |
-| ------------------- | ---------------------------- | ------------------------------- |
-| `invoice.loaded`  | `invoice_id, invoice_data` | Invoice displayed               |
-| `invoice.saved`   | `invoice_id`               | Invoice saved to DB             |
-| `navigation.next` | (none)                       | Next invoice button clicked     |
-| `navigation.prev` | (none)                       | Previous invoice button clicked |
-| `batch.started`   | `batch_id`                 | Batch processing started        |
-| `batch.completed` | `batch_id`                 | Batch processing finished       |
+| Hook                | Arguments                                   | Description                                    |
+| ------------------- | ------------------------------------------- | ---------------------------------------------- |
+| `invoice.loaded`    | `invoice_id, invoice_data`                  | Invoice displayed                              |
+| `invoice.saved`     | `invoice_id`                                | Invoice saved to DB                            |
+| `navigation.next`   | (none)                                      | Next invoice button clicked                    |
+| `navigation.prev`   | (none)                                      | Previous invoice button clicked                |
+| `batch.started`     | `batch_id, count`                           | Batch processing started                       |
+| `batch.completed`   | `batch_id, success, errors`                 | Batch processing finished                      |
+| `source.processing` | `source, status, metadata, payload`         | Generic source lifecycle event for integrations |
+
+#### Generic Integration Event Pattern (`source.processing`)
+
+Use this event when your plugin needs to react to source-driven flows (WhatsApp, Telegram, watcher imports, etc.) without hardcoding plugin-specific wiring in the host app.
+
+- `source`: integration source identifier (for example: `"whatsapp"`, `"telegram"`, `"watcher"`).
+- `status`: lifecycle stage.
+- `metadata`: source routing metadata (chat IDs, message keys, sender IDs, etc.).
+- `payload`: status-specific data object.
+
+Current statuses emitted by the app:
+
+- `duplicate`: duplicate detected; `payload` contains existing invoice summary.
+- `completed`: processing completed; `payload` contains extracted invoice data.
+- `failed`: processing failed; `payload` contains at least `error` and `file_path`.
+
+Declarative plugin example:
+
+```python
+from core.plugins.sdk import DeclarativePlugin, hook
+
+class SourceAwarePlugin(DeclarativePlugin):
+    id = "source-aware"
+    name = "Source Aware"
+
+    @hook("source.processing")
+    def on_source_processing(self, source, status, metadata, payload):
+        if source != "whatsapp":
+            return
+
+        data = payload or {}
+        if status == "completed":
+            inv = data.get("invoice_number", "N/A")
+            self.api.ui.toast(f"WhatsApp processed invoice {inv}", "success")
+        elif status == "duplicate":
+            inv = data.get("invoice_number", "N/A")
+            self.api.ui.toast(f"Duplicate invoice detected: {inv}", "warning")
+        elif status == "failed":
+            err = data.get("error", "Unknown processing error")
+            self.api.ui.toast(f"WhatsApp processing failed: {err}", "error")
+```
+
+Imperative plugin example:
+
+```python
+class MyPlugin(BasePlugin):
+    def on_source_processing_event(self, source, status, metadata, payload):
+        if source == "telegram" and status == "completed":
+            print("Telegram invoice completed", payload)
+```
 
 ---
 
@@ -537,8 +588,8 @@ Plugins can programmatically open core application dialogs. This is useful for c
 | Method                     | Window / Dialog              | Purpose                                                      |
 | :------------------------- | :--------------------------- | :----------------------------------------------------------- |
 | `open_history()`         | **History & Database** | Search, filter, and export past invoices.                    |
-| `open_settings()`        | **AI Settings**        | API Keys (Gemini/OpenRouter), Model selection, Ollama setup. |
-| `open_integrations()`    | **Integrations**       | Configure ERP connections (Odoo) and Webhooks.               |
+| `open_settings()`        | **AI Settings**        | Configure Gemini, OpenRouter, Ollama, LM Studio, and OpenAI-compatible providers. |
+| `open_integrations()`    | **Integrations**       | Configure ERP connections (Odoo/Wafeq), messaging channels, and webhooks.         |
 | `open_processing_mode()` | **Processing Mode**    | Switch between Cloud (AI) and Local (Regex/OCR) modes.       |
 | `open_about()`           | **About**              | Version info and credits.                                    |
 
@@ -569,6 +620,10 @@ def on_result(result):
 
 self.api.processing.extract_async("invoice.pdf", on_result)
 ```
+
+> [!TIP]
+> If a provider fails during batch processing, the app can prompt the user to switch to another configured provider.
+> Keep plugin/connector flows provider-agnostic and let the host app decide failover.
 
 **Extraction Result Structure:**
 
@@ -604,6 +659,29 @@ if invoice_id:
 else:
     print("Failed to save invoice")
 
+### Queue-First Ingestion (Recommended for Connectors/Agents)
+
+For integrations that *receive files* (WhatsApp, Telegram-like connectors, mailbox watchers), prefer queue-first ingestion:
+
+```python
+ok = self.api.processing.import_file_to_queue(
+    file_path="/absolute/path/to/invoice.pdf",
+    source="whatsapp",
+    metadata={
+        "chat_id": "12345",
+        "sender_id": "+9665XXXXXXX",
+        "original_filename": "invoice.pdf"
+    }
+)
+```
+
+Why this is recommended:
+
+- Uses the same watcher/background pipeline as the app.
+- Preserves duplicate detection and hash tracking.
+- Keeps status updates visible in the global queue UI.
+- Carries source metadata through processing for source-specific replies.
+
 ### `self.api.files` - File Management
 
 High-level helpers for managing physical files related to invoices.
@@ -615,10 +693,6 @@ permanent_path = self.api.files.save_invoice_file(invoice_id, local_temp_path)
 
 if permanent_path:
     self.api.ui.toast(f"File saved to batch folder: {permanent_path}")
-```
-
-```
-
 ```
 
 > [!NOTE]

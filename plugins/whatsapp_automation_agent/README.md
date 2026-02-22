@@ -1,15 +1,27 @@
 # WhatsApp Automation Agent Plugin
 
-Automate your invoice workflow with WhatsApp. This plugin uses an embedded browser to send invoices directly to your contacts from within the app.
+Automate inbound and outbound invoice workflows through WhatsApp Web using an embedded Playwright browser session.
 
 ## Features
-- **Embedded Browser**: No need to switch between apps or browser tabs.
-- **Auto-Reply**: Optional AI-powered bot mode (Integration required).
-- **Background Agent**: Runs as a background service for instant message delivery.
-- **Caption Support**: Automatically includes line items and invoice summaries as captions when sending images.
+- **Embedded Browser Session**: Works inside the app context (no manual browser tab switching required).
+- **Incoming File Intake**: Detects incoming images and downloadable documents (including PDFs), downloads them, and sends them to the app queue.
+- **Telegram-Style Receive Replies**: Sends status acknowledgements for incoming files:
+  - `⏳ Downloading invoice...`
+  - `📥 Received. Added to processing queue.`
+  - `❌ Download failed.` (when needed)
+- **Sender Filtering**: Optional allow-list by chat name or number.
+- **Outgoing Send Action**: Adds **Send WhatsApp** action in toolbar for sharing current invoice.
+- **Optional Text Bot Reply**: `bot_mode` can send an automatic text reply for plain text messages.
 
 ## Setup
-1. Enable the plugin in the **Integrations** tab.
-2. Open the **WhatsApp Agent** settings.
-3. Start the agent and scan the QR code to log in.
-4. Once connected, you'll see a **Send WhatsApp** button in the toolbar when viewing an invoice.
+1. Enable the plugin from **Settings → Integrations**.
+2. Open **WhatsApp Agent** settings tab.
+3. Click **Start Agent** and scan the QR code.
+4. After connection, use:
+   - **Send WhatsApp** for outbound sharing from current invoice.
+   - Incoming chat messages/files for automated queue ingestion.
+
+## Notes
+- First start may download Playwright browser binaries.
+- Keep the session active to avoid repeated QR scans.
+- Use document upload in WhatsApp for most reliable PDF intake.
