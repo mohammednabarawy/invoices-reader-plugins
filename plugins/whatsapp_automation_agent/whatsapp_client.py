@@ -3,6 +3,8 @@ import sys
 import time
 import asyncio
 import traceback
+import hashlib
+from collections import deque
 from playwright.async_api import async_playwright
 from core.plugins.sdk import get_logger
 
@@ -23,6 +25,8 @@ class WhatsAppClient:
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
         self.user_data_dir = os.path.join(plugin_dir, "whatsapp_session")
         self.session_dir = self.user_data_dir  # alias for settings_ui
+        self._recent_reply_keys = deque(maxlen=500)
+        self._recent_reply_lookup = set()
 
     def run(self):
         """Entry point for the background thread."""
@@ -267,6 +271,7 @@ class WhatsAppClient:
                         if messages:
                             last_message = messages[-1]
                             has_downloaded = False
+                            message_key = await self._get_message_key(last_message, header_title)
                             
                             # 1. Check for documents/files with a direct downward arrow download button inside the message
                             dl_icon_selectors = "span[data-icon='down'], span[data-icon='arrow-down']"
@@ -277,6 +282,10 @@ class WhatsAppClient:
                                 
                             if await download_btn.count() > 0 and await download_btn.is_visible():
                                 logger.info("Found downloadable media attachment.")
+                                await self._reply_once(
+                                    f"{message_key}:downloading",
+                                    "⏳ Downloading invoice..."
+                                )
                                 try:
                                     async with self.page.expect_download(timeout=15000) as download_info:
                                         await download_btn.click()
@@ -289,16 +298,39 @@ class WhatsAppClient:
                                     
                                     # Forward to main app via API
                                     if hasattr(self.plugin.api, 'processing'):
-                                        self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        enqueued = self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                        if enqueued:
+                                            await self._reply_once(
+                                                f"{message_key}:queued",
+                                                "📥 Received. Added to processing queue."
+                                            )
+                                        else:
+                                            await self._reply_once(
+                                                f"{message_key}:queue_failed",
+                                                "❌ Failed to add invoice to queue."
+                                            )
+                                    else:
+                                        await self._reply_once(
+                                            f"{message_key}:queue_failed",
+                                            "❌ Failed to add invoice to queue."
+                                        )
                                         
                                 except Exception as e:
                                     logger.error(f"Error downloading media document: {e}")
+                                    await self._reply_once(
+                                        f"{message_key}:download_failed",
+                                        "❌ Download failed."
+                                    )
 
                             # 2. Check for displayed images (WhatsApp strips direct download buttons from displayed images)
                             if not has_downloaded:
                                 img_element = last_message.locator("img[src^='blob:']").first
                                 if await img_element.count() > 0 and await img_element.is_visible():
                                     logger.info("Found image message.")
+                                    await self._reply_once(
+                                        f"{message_key}:downloading",
+                                        "⏳ Downloading invoice..."
+                                    )
                                     try:
                                         # Click image to open the media viewer
                                         await img_element.click()
@@ -336,11 +368,34 @@ class WhatsAppClient:
                                                 
                                                 # Queue for processing
                                                 if hasattr(self.plugin.api, 'processing'):
-                                                    self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                                    enqueued = self.plugin.api.processing.import_file_to_queue(file_path, "WhatsApp")
+                                                    if enqueued:
+                                                        await self._reply_once(
+                                                            f"{message_key}:queued",
+                                                            "📥 Received. Added to processing queue."
+                                                        )
+                                                    else:
+                                                        await self._reply_once(
+                                                            f"{message_key}:queue_failed",
+                                                            "❌ Failed to add invoice to queue."
+                                                        )
+                                                else:
+                                                    await self._reply_once(
+                                                        f"{message_key}:queue_failed",
+                                                        "❌ Failed to add invoice to queue."
+                                                    )
                                             except Exception as e:
                                                 logger.error(f"Failed during download trigger in viewer: {e}")
+                                                await self._reply_once(
+                                                    f"{message_key}:download_failed",
+                                                    "❌ Download failed."
+                                                )
                                         else:
                                             logger.warning("Could not find visible download button in image viewer after 2s.")
+                                            await self._reply_once(
+                                                f"{message_key}:download_failed",
+                                                "❌ Download failed."
+                                            )
                                             # Diagnostic: list potential icons in the header
                                             try:
                                                 icons = await self.page.locator("span[data-icon]").all()
@@ -354,6 +409,10 @@ class WhatsAppClient:
                                         await asyncio.sleep(0.5)
                                     except Exception as e:
                                         logger.error(f"Error handling image viewer: {e}")
+                                        await self._reply_once(
+                                            f"{message_key}:download_failed",
+                                            "❌ Download failed."
+                                        )
                                         # Ensure viewer is closed
                                         await self.page.keyboard.press("Escape")
 
@@ -364,14 +423,14 @@ class WhatsAppClient:
                                 msg_text = await text_element.first.inner_text()
                                 logger.info(f"Received WhatsApp Message: {msg_text}")
                                 
-                            # 4. Auto-reply logic
-                            if msg_text or has_downloaded:
+                            # 4. Auto-reply for text mode (file acknowledgements are always-on above)
+                            if msg_text and not has_downloaded:
                                 bot_val = self.plugin.get_setting('bot_mode', False, type=bool)
                                 if bot_val:
-                                    reply_msg = "I received your message! I am the Invoices Reader AI agent."
-                                    if has_downloaded:
-                                        reply_msg = "I received your file and queued it for processing! I am the Invoices Reader AI agent."
-                                    await self.auto_reply(reply_msg)
+                                    await self._reply_once(
+                                        f"{message_key}:bot_reply",
+                                        "I received your message! I am the Invoices Reader AI agent."
+                                    )
                                     
                     except Exception as e:
                         error_text = str(e)
@@ -475,6 +534,61 @@ class WhatsAppClient:
         if last_error:
             logger.debug(f"Could not open unread chat row this cycle: {last_error}")
         return False
+
+    async def _get_message_key(self, message_element, header_title: str = "") -> str:
+        """Create a stable key for deduplicating auto-replies."""
+        try:
+            data_id = await message_element.get_attribute("data-id")
+            if data_id:
+                return data_id
+        except Exception:
+            pass
+
+        safe_header = (header_title or "unknown_chat").strip().lower().replace(" ", "_")
+
+        try:
+            pre_plain = await message_element.get_attribute("data-pre-plain-text")
+            if pre_plain:
+                digest = hashlib.sha1(pre_plain.encode("utf-8", "ignore")).hexdigest()[:12]
+                return f"fallback:{safe_header}:{digest}"
+        except Exception:
+            pass
+
+        try:
+            message_text = await message_element.inner_text()
+            if message_text:
+                digest = hashlib.sha1(message_text.encode("utf-8", "ignore")).hexdigest()[:12]
+                return f"fallback:{safe_header}:{digest}"
+        except Exception:
+            pass
+
+        return f"fallback:{safe_header}:{int(time.time())}"
+
+    def _mark_reply_key(self, key: str):
+        """Track sent reply keys with bounded memory."""
+        if not key:
+            return
+
+        if key in self._recent_reply_lookup:
+            return
+
+        if len(self._recent_reply_keys) == self._recent_reply_keys.maxlen:
+            evicted = self._recent_reply_keys[0]
+            self._recent_reply_lookup.discard(evicted)
+
+        self._recent_reply_keys.append(key)
+        self._recent_reply_lookup.add(key)
+
+    async def _reply_once(self, key: str, text: str):
+        """Send a reply once per key within the current agent session."""
+        if key in self._recent_reply_lookup:
+            return
+
+        try:
+            await self.auto_reply(text)
+            self._mark_reply_key(key)
+        except Exception as e:
+            logger.error(f"Failed to send deduplicated auto-reply: {e}")
             
     async def auto_reply(self, text: str):
         """Types and sends a message in the currently open chat."""
