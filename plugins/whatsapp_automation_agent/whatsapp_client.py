@@ -160,17 +160,7 @@ class WhatsAppClient:
         
         while self.is_running:
             try:
-                # Look for unread message badges in the chat list
-                unread_selectors = [
-                    "div[aria-label*='unread message']",
-                    "div[aria-label*='رسالة غير مقروءة']",
-                    "span[aria-label*='unread message']",
-                    "span[aria-label*='رسالة غير مقروءة']"
-                ]
-                unread_chats = []
-                for selector in unread_selectors:
-                    elements = await self.page.locator(selector).all()
-                    unread_chats.extend(elements)
+                unread_chats = await self._collect_unread_badges()
                 
                 # Use a set to avoid processing the same chat multiple times if selectors overlap
                 # (Playwright locators are unhashable though, so just process them and they'll be read)
@@ -178,12 +168,10 @@ class WhatsAppClient:
                 
                 for chat in unread_chats:
                     try:
-                        # Ensure we can click it
-                        if not await chat.is_visible():
+                        # Open the unread chat by clicking its row (not the unread badge itself).
+                        if not await self._open_chat_from_badge(chat):
                             continue
                             
-                        # Click the chat to open it
-                        await chat.click(timeout=5000)
                         await asyncio.sleep(1.5) # wait for messages to load and read state to update
                         processed_in_this_loop = True
                         
@@ -386,7 +374,11 @@ class WhatsAppClient:
                                     await self.auto_reply(reply_msg)
                                     
                     except Exception as e:
-                        logger.warning(f"Error checking individual message: {e}")
+                        error_text = str(e)
+                        if "intercepts pointer events" in error_text or "Timeout" in error_text:
+                            logger.debug(f"Skipping busy chat row in this cycle: {error_text}")
+                        else:
+                            logger.warning(f"Error checking individual message: {e}")
                 
                 # If we processed chats, maybe wait a bit less
                 if processed_in_this_loop:
@@ -396,6 +388,93 @@ class WhatsAppClient:
             except Exception as e:
                 # Silently catch broad scraping errors to keep the loop resilient
                 await asyncio.sleep(5)
+
+    async def _collect_unread_badges(self):
+        """Collect unread badges and deduplicate by chat row when possible."""
+        unread_selectors = [
+            "div[aria-label*='unread message']",
+            "div[aria-label*='رسالة غير مقروءة']",
+            "span[aria-label*='unread message']",
+            "span[aria-label*='رسالة غير مقروءة']"
+        ]
+        unread_badges = []
+        seen_row_keys = set()
+
+        for selector in unread_selectors:
+            elements = await self.page.locator(selector).all()
+            for badge in elements:
+                row_key = None
+                try:
+                    row = badge.locator("xpath=ancestor::div[@role='listitem'][1]").first
+                    if await row.count() > 0:
+                        row_key = await row.get_attribute("data-id")
+                        if not row_key:
+                            box = await row.bounding_box()
+                            if box:
+                                row_key = f"{int(box['x'])}:{int(box['y'])}"
+                except Exception:
+                    row_key = None
+
+                if row_key and row_key in seen_row_keys:
+                    continue
+                if row_key:
+                    seen_row_keys.add(row_key)
+                unread_badges.append(badge)
+
+        return unread_badges
+
+    async def _open_chat_from_badge(self, badge):
+        """Open chat row that owns an unread badge with resilient click fallbacks."""
+        click_targets = [
+            badge.locator("xpath=ancestor::div[@role='listitem'][1]").first,
+            badge.locator("xpath=ancestor::div[@role='button'][1]").first,
+            badge.first
+        ]
+        last_error = None
+
+        for target in click_targets:
+            try:
+                if await target.count() == 0:
+                    continue
+                if not await target.is_visible():
+                    continue
+                try:
+                    await target.scroll_into_view_if_needed()
+                except Exception:
+                    pass
+
+                try:
+                    await target.click(timeout=3000)
+                    return True
+                except Exception as click_error:
+                    last_error = click_error
+                    await target.click(timeout=3000, force=True)
+                    return True
+            except Exception as target_error:
+                last_error = target_error
+
+        try:
+            handle = await badge.element_handle()
+            if handle:
+                clicked = await self.page.evaluate(
+                    """
+                    (el) => {
+                        const target = el.closest("div[role='listitem']") || el.closest("div[role='button']") || el.parentElement;
+                        if (!target) return false;
+                        target.click();
+                        return true;
+                    }
+                    """,
+                    handle
+                )
+                if clicked:
+                    return True
+        except Exception as js_error:
+            last_error = js_error
+
+        if last_error:
+            logger.debug(f"Could not open unread chat row this cycle: {last_error}")
+        return False
             
     async def auto_reply(self, text: str):
         """Types and sends a message in the currently open chat."""
