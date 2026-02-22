@@ -6,6 +6,14 @@ import traceback
 import hashlib
 import base64
 import json
+import os
+import sys
+import time
+import asyncio
+import traceback
+import hashlib
+import base64
+import json
 import re
 from urllib.parse import quote
 from collections import deque
@@ -32,6 +40,47 @@ class WhatsAppClient:
         self._recent_reply_keys = deque(maxlen=500)
         self._recent_reply_lookup = set()
         self._send_lock = asyncio.Lock()
+        self._is_frozen_runtime = (
+            getattr(sys, "frozen", False)
+            or hasattr(sys, "_MEIPASS")
+            or hasattr(sys, "__nuitka_binary_dir")
+            or "__compiled__" in globals()
+        )
+
+    async def _install_playwright_chromium(self) -> bool:
+        """Install Playwright Chromium without recursively relaunching frozen app."""
+        try:
+            if self._is_frozen_runtime:
+                from playwright.__main__ import main as playwright_main
+
+                def _run_install():
+                    try:
+                        # Newer Playwright exposes main(argv)
+                        return playwright_main(["install", "chromium"])
+                    except TypeError:
+                        # Older variants read sys.argv directly.
+                        previous_argv = list(sys.argv)
+                        try:
+                            sys.argv = ["playwright", "install", "chromium"]
+                            return playwright_main()
+                        finally:
+                            sys.argv = previous_argv
+                    except SystemExit as exc:
+                        return exc.code
+
+                result = await asyncio.to_thread(_run_install)
+                return result in (0, None)
+
+            import subprocess
+
+            result = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=False,
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.error(f"[WA] Failed to install Playwright Chromium: {e}")
+            return False
 
     def _normalize_download_filename(self, filename_hint: str, default_ext: str = ".pdf") -> str:
         """Sanitize a filename for local filesystem writes."""
@@ -254,6 +303,13 @@ class WhatsAppClient:
         try:
             self.playwright = await async_playwright().start()
         except ImportError:
+            if self._is_frozen_runtime:
+                self.plugin.update_status("Playwright package missing in frozen app build.")
+                logger.error(
+                    "[WA] Playwright dependency missing in frozen runtime. "
+                    "Bundle plugin dependencies instead of runtime pip install."
+                )
+                return
             self.plugin.update_status("Playwright package missing. Please wait...")
             import subprocess
             subprocess.run([sys.executable, "-m", "pip", "install", "playwright"], check=True)
@@ -274,8 +330,10 @@ class WhatsAppClient:
         except Exception as e:
             if "Executable doesn't exist" in str(e) or "playwright install" in str(e).lower():
                 self.plugin.update_status("Downloading browser binaries (first time)...")
-                import subprocess
-                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+                if not await self._install_playwright_chromium():
+                    self.plugin.update_status("Failed to install Playwright browser binaries.")
+                    logger.error("[WA] Playwright browser installation failed.")
+                    return
                 # Retry launch
                 self.context = await self.playwright.chromium.launch_persistent_context(
                     user_data_dir=self.user_data_dir,

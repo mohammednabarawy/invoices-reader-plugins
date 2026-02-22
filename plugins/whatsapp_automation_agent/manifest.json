@@ -1,7 +1,7 @@
 {
     "id": "whatsapp_automation_agent",
     "name": "WhatsApp Automation Agent",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "Community",
     "description": "Powerful automation that integrates Invoices Reader with WhatsApp via an embedded browser. Send invoices automatically without leaving the app.",
     "min_app_version": "1.0.0",
@@ -18,7 +18,7 @@
         "file:write"
     ],
     "dependencies": [
-        "playwright>=1.40.0"
+        "playwright==1.58.0"
     ],
     "category": "communication"
 }

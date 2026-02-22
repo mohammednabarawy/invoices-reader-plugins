@@ -22,6 +22,8 @@ Automate inbound and outbound invoice workflows through WhatsApp Web using an em
    - Incoming chat messages/files for automated queue ingestion.
 
 ## Notes
+- Python runtime dependencies are vendored under `libs/` for frozen app builds.
+- In packaged (`Nuitka`) app mode, runtime `pip install` is disabled for safety.
 - First start may download Playwright browser binaries.
 - Keep the session active to avoid repeated QR scans.
 - Use document upload in WhatsApp for most reliable PDF intake.

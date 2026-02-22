@@ -1,4 +1,4 @@
-../../bin/playwright.exe,sha256=nbezzTLD4Y-dN6nnbXfqGA9tIBcEvLuenlqP-TPZpkM,108352
+../../../bin/playwright,sha256=WoAUKQHYdnBVXm0PvBZiRAoa5kQ6tPU7-fbDo3yt7E4,215
 playwright-1.58.0.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
 playwright-1.58.0.dist-info/METADATA,sha256=pyOpKiw6m9AhURPhbdDqupMCYlnED_S3-Bb_l0IoF1M,3453
 playwright-1.58.0.dist-info/RECORD,,
@@ -121,9 +121,9 @@ playwright/async_api/__pycache__/_context_manager.cpython-312.pyc,,
 playwright/async_api/__pycache__/_generated.cpython-312.pyc,,
 playwright/async_api/_context_manager.py,sha256=TWWR-Qa9mhmoORyAVVnqinX6RX43oxxrrGUld_Q6APo,2041
 playwright/async_api/_generated.py,sha256=vsFDgZTlHPlCsB6EJdfXqWL0vm8UYZNjEzoBZvZvcxM,846417
-playwright/driver/LICENSE,sha256=tMeEDoQauPFFQ2Rr2UHQGkWfsPjOEkkkQ0GypjJyynk,145976
-playwright/driver/README.md,sha256=ZhexDNUfnmhW0z_ZEugHpARqsBJOLXgquieNufMQ3cU,28
-playwright/driver/node.exe,sha256=0UupXNzh733JrTrHSUnKXbOLJzeO4w8wojzyb56HWhE,89953280
+playwright/driver/LICENSE,sha256=U3MIRlEDowbQ4-7PQmMrT_G0iqrsBE6fwQp4yB_QCzQ,143310
+playwright/driver/README.md,sha256=F24L39_Zbj3KxQF1KfZdypnFOF8ChXKQ_8RH75A9X9A,41
+playwright/driver/node,sha256=upIBB7fgrTR-1Y2g8nh9-ZdSRDOMcOpdCdcb36G8ujw,119978592
 playwright/driver/package/LICENSE,sha256=RYc9AKDdJDWW3rSqI7JJOz0fBnGSG_JTjqQx1zgCIOs,11601
 playwright/driver/package/NOTICE,sha256=bWAhkRh7NbmwHSz_oByEacLI2d6KlvG_ho4PJk9RyB0,254
 playwright/driver/package/README.md,sha256=0W_3-OOPofyVT2la1VHNwRjZyb3V89gyA5AfTDF9fX4,120

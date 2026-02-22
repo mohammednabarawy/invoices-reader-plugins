@@ -1,1 +1,1 @@
-win_amd64.whl driver package
+macosx_11_0_universal2.whl driver package
