@@ -14,7 +14,7 @@ Automate inbound and outbound invoice workflows through WhatsApp Web using an em
 - **Optional Text Bot Reply**: `bot_mode` can send an automatic text reply for plain text messages.
 
 ## Setup
-1. Enable the plugin from **Settings → Integrations**.
+1. Enable the plugin from **Settings → Chat Agents**.
 2. Open **WhatsApp Agent** settings tab.
 3. Click **Start Agent** and scan the QR code.
 4. After connection, use:
@@ -27,3 +27,4 @@ Automate inbound and outbound invoice workflows through WhatsApp Web using an em
 - First start may download Playwright browser binaries.
 - Keep the session active to avoid repeated QR scans.
 - Use document upload in WhatsApp for most reliable PDF intake.
+

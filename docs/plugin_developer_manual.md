@@ -499,7 +499,12 @@ def create_settings_widget():
     # ... build widget ...
     return widget
 
-self.api.register_settings_tab(self.id, "My Settings", create_settings_widget)
+self.api.register_settings_tab(
+    self.id,
+    "My Settings",
+    create_settings_widget,
+    page="integrations",  # or "chat_agents"
+)
 
 # Add sidebar section (empty, with icon)
 section_id = self.api.ui.add_section("My Section", "🔌", plugin_id=self.id)
@@ -949,16 +954,29 @@ if telegram and 'send_message' in telegram:
 
 ### `self.api.register_settings_tab` - Unified Settings
 
-The `register_settings_tab` method allows you to add a native page to the application's **Unified Settings Dialog**. This is preferred over creating custom dialogs for configuration.
+The `register_settings_tab` method allows you to add a native card to the application's **Unified Settings Dialog**. This is preferred over creating custom dialogs for configuration.
+
+Use the optional `page` argument to control placement:
+- `"integrations"` (default): ERP systems, webhooks, and general integrations.
+- `"chat_agents"`: chat-focused agents/connectors like Telegram and WhatsApp.
 
 ```python
 def on_load(self):
-    # Register a tab in the "Integrations" section (or dynamic list)
+    # Register in Integrations (default)
     if hasattr(self.api, 'register_settings_tab'):
         self.api.register_settings_tab(
             plugin_id=self.id,
             label="My Plugin", 
-            widget_factory=self._create_settings_ui
+            widget_factory=self._create_settings_ui,
+            page="integrations",
+        )
+
+        # Chat/messaging plugin example:
+        self.api.register_settings_tab(
+            plugin_id=f"{self.id}_chat",
+            label="My Chat Agent",
+            widget_factory=self._create_chat_settings_ui,
+            page="chat_agents",
         )
     return True
 
@@ -1532,3 +1550,5 @@ class UiTestPlugin(DeclarativePlugin):
     def test_actions_area(self, invoice=None):
         self.api.show_toast("Clicked Action Area Button!", "info")
 ```
+
+

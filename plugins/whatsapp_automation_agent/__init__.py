@@ -38,13 +38,14 @@ class WhatsAppAgentPlugin(DeclarativePlugin):
 
     def on_load(self):
         """Called after framework initializes the plugin (API is available)."""
-        # Register settings UI in the Integrations page
+        # Register settings UI in the Chat Agents page
         try:
             from .settings_ui import WhatsAppSettingsWidget
             self.api.register_settings_tab(
                 plugin_id=self.id,
                 label="WhatsApp Agent",
-                widget_factory=lambda: WhatsAppSettingsWidget(self)
+                widget_factory=lambda: WhatsAppSettingsWidget(self),
+                page="chat_agents",
             )
         except Exception as e:
             logger.error(f"Failed to register WhatsApp settings tab: {e}")
@@ -285,3 +286,4 @@ Thanks!""", type=str)
         """Helper to update the UI status from the background thread."""
         self._status_message = message
         logger.info(f"WhatsApp Status: {message}")
+
