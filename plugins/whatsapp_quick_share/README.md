@@ -6,6 +6,7 @@ Quickly share the current invoice via WhatsApp Web and copy the invoice image to
 - **Pre-filled WhatsApp Message**: Opens WhatsApp Web with vendor/amount/date summary.
 - **Clipboard Utility**: Copies current invoice image for instant paste in chat/email.
 - **Toolbar Action**: Single-click access from the main toolbar.
+- **Chat Agents Settings**: Configure the message template and auto-copy behavior from `Settings > Chat Agents`.
 
 ## Usage
 1. Open an invoice in Invoices Reader.

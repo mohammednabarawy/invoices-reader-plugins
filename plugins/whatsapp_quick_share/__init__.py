@@ -9,9 +9,9 @@ class WhatsAppRedirectPlugin(DeclarativePlugin):
     and copies invoice image to clipboard for easy pasting.
     """
     
-    id = "whatsapp_redirect"
+    id = "whatsapp_quick_share"
     name = "WhatsApp Quick Share"
-    version = "1.0.0"
+    version = "1.0.1"
     author = "Invoices Reader"
     description = "Quickly send invoice summaries to WhatsApp via your default browser. Includes one-click image copying for easy pasting."
 
@@ -42,8 +42,13 @@ Thanks!"""
         # Load persistent settings
         self._load_settings()
         
-        # Register settings tab
-        self.api.ui.add_settings_page("whatsapp-settings", "WhatsApp", self.create_settings_widget())
+        # Register settings tab under the real plugin ID so permissions resolve correctly.
+        self.api.register_settings_tab(
+            plugin_id=self.id,
+            label="WhatsApp Quick Share",
+            widget_factory=self.create_settings_widget,
+            page="chat_agents",
+        )
         return True
 
     def _load_settings(self):
